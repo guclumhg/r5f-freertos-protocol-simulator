@@ -12,34 +12,28 @@ import sys
 from statistics import mean
 
 # The predictions. These are the given constants, not fitted to the data.
-LINE_RATE_BPS = 11520              # 64 byte frames at 180 Hz
-SENSOR_HZ_NOMINAL = 180
-SENSOR_HZ_UNDER_BURST = 164        # 180 minus 1024/64
+LINE_RATE_BPS = 11520              # 115200 baud, 8N1
+FRAME_LEN = 69                     # 2 header + 1 counter + 64 data + 2 crc
+# The sensor stream is continuous, so its rate is the line divided by the
+# frame size rather than a setting. Neither comes out whole.
+SENSOR_HZ_NOMINAL = LINE_RATE_BPS / FRAME_LEN            # 166.96
 EXPECTED_PEAK_BACKLOG = 796        # 1024 ingress minus 228 drained
-FRAME_LEN = 64
 RING_BYTES = 4096
 CAN_FRAMES_PER_BURST = 147
 CAN_BYTES_PER_BURST = 1024
-CAN_UNITS_PER_BURST = CAN_BYTES_PER_BURST // FRAME_LEN
+SENSOR_HZ_UNDER_BURST = (LINE_RATE_BPS - CAN_BYTES_PER_BURST) / FRAME_LEN  # 152.12
 
-# The 796 figure assumes a byte can leave the instant it arrives. Two things
-# on a real link delay the start of the drain, and neither is in the
-# arithmetic:
+# The 796 figure assumes the drain starts the instant the burst does. The
+# bridge sends its bytes unframed, so there is no unit to assemble first and
+# nothing delays it except one thing: it can only take the line at a sensor
+# frame boundary, because a frame cut in half could not be reassembled at the
+# far end. Worst case it has just missed one and waits 68 byte times.
 #
-#   1. The bridge cannot transmit half a unit. The first 64 byte unit is not
-#      complete until eight consecutive frames have arrived, which is nine
-#      slots (one flow control plus eight data) into the burst.
-#   2. It cannot cut into a sensor frame already on the wire, so it waits up
-#      to one whole frame - 63 byte times.
-#
-# So the drain starts somewhere between 1.215 ms and 6.683 ms into the
-# 19.845 ms burst, and the peak lands in a band rather than on a single value.
+# So 796 is the ideal case and also the lower edge of the band.
 BURST_US = 19845.0
 BYTE_US = 86.8
-SLOT_US = 135.0
-FIRST_UNIT_SLOTS = 1 + 8           # flow control + one block of data frames
-DELAY_MIN_US = FIRST_UNIT_SLOTS * SLOT_US
-DELAY_MAX_US = DELAY_MIN_US + (FRAME_LEN - 1) * BYTE_US
+DELAY_MIN_US = 0.0
+DELAY_MAX_US = (FRAME_LEN - 1) * BYTE_US            # 5902 us
 PEAK_MIN = CAN_BYTES_PER_BURST - int((BURST_US - DELAY_MIN_US) / BYTE_US)
 PEAK_MAX = CAN_BYTES_PER_BURST - int((BURST_US - DELAY_MAX_US) / BYTE_US)
 
@@ -124,9 +118,9 @@ def main(path):
     row("  of which sensor", f"{delta('wire','tx_sensor')}", "-")
     row("  of which bridge", f"{delta('wire','tx_bridge')}",
         f"{CAN_BYTES_PER_BURST}/s")
-    row("sensor frames verified", f"{frames_ok} ({frames_ok/span_s:.1f} Hz)",
-        f"{SENSOR_HZ_UNDER_BURST} Hz under load" if has_can
-        else f"{SENSOR_HZ_NOMINAL} Hz idle")
+    row("sensor frames verified", f"{frames_ok} ({frames_ok/span_s:.2f} Hz)",
+        f"{SENSOR_HZ_UNDER_BURST:.2f} Hz under load" if has_can
+        else f"{SENSOR_HZ_NOMINAL:.2f} Hz idle")
 
     if has_can:
         print("-- the CAN side " + "-" * (W - 16))
@@ -136,13 +130,13 @@ def main(path):
             f"{bursts * CAN_FRAMES_PER_BURST} ({bursts} x {CAN_FRAMES_PER_BURST})")
         row("bridge payload bytes", f"{delta('can','data')}",
             f"{bursts * CAN_BYTES_PER_BURST} ({bursts} x {CAN_BYTES_PER_BURST})")
-        row("bridge units reassembled", f"{delta('can','units')}",
-            f"{bursts * CAN_UNITS_PER_BURST} ({bursts} x {CAN_UNITS_PER_BURST})")
+        row("bursts reassembled at the far end", f"{delta('can','reassembled')}",
+            f"{bursts} (all of them)")
 
     print("-- the buffers " + "-" * (W - 15))
     row("RX ring peak", f"{rx_peak} of {RING_BYTES} B", "~12 B")
     row("bridge ring peak", f"{bridge_peak} of {RING_BYTES} B",
-        f"{PEAK_MIN}..{PEAK_MAX} B with framing")
+        f"{PEAK_MIN}..{PEAK_MAX} B")
     if bridge_peak:
         err = 100 * (bridge_peak - EXPECTED_PEAK_BACKLOG) / EXPECTED_PEAK_BACKLOG
         row("  vs the 796 arithmetic", f"{err:+.1f} %",
@@ -154,7 +148,6 @@ def main(path):
         ("sensor CRC errors", delta("frames", "crc")),
         ("sensor counter gaps", delta("frames", "gaps")),
         ("resyncs", delta("frames", "resync")),
-        ("bridge unit CRC errors", delta("can", "unit_crc")),
         ("ISO-TP reassembly errors", delta("can", "isotp_err")),
         ("RX ring overflow", last["rx"]["ovf"]),
         ("bridge ring overflow", last["bridge"]["ovf"]),
@@ -189,8 +182,8 @@ def main(path):
         print(f"burst profiles captured : {len(traces)}")
         print(f"    sample period       : {traces[0]['us']} us x {len(traces[0]['d'])} samples")
         print(f"    peak backlog        : min {min(peaks)} / mean {mean(peaks):.0f} / max {max(peaks)} B")
-        print(f"    arithmetic          : {EXPECTED_PEAK_BACKLOG} B (assumes an instant drain)")
-        print(f"    with framing delays : {PEAK_MIN}..{PEAK_MAX} B")
+        print(f"    arithmetic          : {EXPECTED_PEAK_BACKLOG} B (drain starts instantly)")
+        print(f"    with frame atomicity: {PEAK_MIN}..{PEAK_MAX} B")
         lo, hi = PEAK_MIN - TRACE_RESOLUTION_B, PEAK_MAX + TRACE_RESOLUTION_B
         print(f"    plus trace sampling : {lo}..{hi} B")
         inside = sum(1 for p in peaks if lo <= p <= hi)

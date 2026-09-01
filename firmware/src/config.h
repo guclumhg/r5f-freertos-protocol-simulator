@@ -35,24 +35,27 @@
 
 /* ------------------------------------------------------------ sensor path */
 
-/* Frame layout as given: two header bytes, one counter byte, the payload,
- * two checksum bytes.
+/* Frame layout as given: two header bytes, one counter byte, 64 bytes of
+ * data, two checksum bytes. Sixty nine bytes on the wire.
  *
- * FRAME_PAYLOAD_BYTES is the only free parameter, and it is not free for
- * long: the frame total times the frame rate has to equal the line rate, and
- * the assertion at the bottom of this file enforces that. At 180 Hz on a
- * 115200 baud line the total must be 64, which leaves 59 for the payload.
- * A 64 byte payload would make the frame 69 bytes and 180 Hz would need
- * 12420 B/s on a line that carries 11520 - the build will say so. */
+ * The sensor stream is continuous - frames go out back to back with no gap -
+ * so it fills the line by construction and the frame rate is a consequence
+ * rather than a setting. Sixty nine does not divide 11520, so there is no
+ * whole-number frame rate, and there does not need to be. */
 #define FRAME_HEADER_BYTES      2u
 #define FRAME_COUNTER_BYTES     1u
+#define FRAME_PAYLOAD_BYTES     64u
 #define FRAME_CRC_BYTES         2u
-#define FRAME_PAYLOAD_BYTES     59u
 
 #define SENSOR_FRAME_BYTES      (FRAME_HEADER_BYTES + FRAME_COUNTER_BYTES + \
                                  FRAME_PAYLOAD_BYTES + FRAME_CRC_BYTES)
-#define SENSOR_FRAME_HZ         180u        /* fills the line exactly */
-#define SENSOR_BYTES_PER_SEC    (SENSOR_FRAME_BYTES * SENSOR_FRAME_HZ)
+#define LINE_BYTES_PER_SEC      (UART_BAUD / 10u)     /* 11520, the capacity */
+
+/* Frame rates in hundredths of a hertz, because they are not whole numbers.
+ * Idle: the whole line. Loaded: the line less what the CAN side takes. */
+#define SENSOR_HZ_X100_IDLE     (LINE_BYTES_PER_SEC * 100u / SENSOR_FRAME_BYTES)
+#define SENSOR_HZ_X100_LOADED   ((LINE_BYTES_PER_SEC - CAN_BURST_BYTES) * 100u \
+                                 / SENSOR_FRAME_BYTES)
 
 /* --------------------------------------------------------------- CAN path */
 
@@ -89,8 +92,8 @@
 #define RING_BYTES              4096u       /* ~5x margin over the peak */
 
 /* The bridge takes the line while it drains, so the sensor stream gives up
- * exactly this many frames per second. 180 Hz -> 164 Hz. */
-#define SENSOR_FRAMES_YIELDED   (CAN_BURST_BYTES / SENSOR_FRAME_BYTES)
+ * this much of its rate. In hundredths of a frame, since it is not whole. */
+#define SENSOR_FRAMES_YIELDED_X100 (CAN_BURST_BYTES * 100u / SENSOR_FRAME_BYTES)
 
 /* ------------------------------------------------------------------- pins */
 
@@ -115,14 +118,15 @@ _Static_assert(CAN_SLOT_NS * CYCLES_PER_US / 1000u == CAN_SLOT_CYCLES,
                "CAN slot is not a whole number of cycles at R5F_SYS_CLK_HZ");
 _Static_assert(BYTE_TIME_CYCLES < 65536u && CAN_SLOT_CYCLES < 65536u,
                "both periods must fit a 16-bit PWM wrap");
-_Static_assert(SENSOR_BYTES_PER_SEC == UART_BAUD / 10u,
-               "frame size times frame rate is not the line rate: with this "
-               "payload the sensor stream either starves the line or "
-               "oversubscribes it, and the ring buffer analysis does not hold");
-_Static_assert(SENSOR_FRAME_BYTES ==
-               FRAME_HEADER_BYTES + FRAME_COUNTER_BYTES +
-               FRAME_PAYLOAD_BYTES + FRAME_CRC_BYTES,
-               "frame layout does not add up to the frame size");
+_Static_assert(SENSOR_FRAME_BYTES == 69u,
+               "the given frame layout is 2 header + 1 counter + 64 data + "
+               "2 checksum");
+_Static_assert(SENSOR_HZ_X100_IDLE > 16600u && SENSOR_HZ_X100_IDLE < 16800u,
+               "idle frame rate is not the line rate divided by the frame "
+               "size, so the sensor stream is not filling the line");
+_Static_assert(SENSOR_FRAME_BYTES < RING_BYTES / 4u,
+               "a single frame must be small against the ring, or the "
+               "arbiter's frame atomicity would dominate the backlog");
 _Static_assert(ISOTP_DATA_FRAMES + ISOTP_PROTO_FRAMES == ISOTP_FRAMES_TOTAL,
                "ISO-TP frame accounting does not add up");
 _Static_assert(ISOTP_DATA_FRAMES * CAN_FRAME_PAYLOAD == CAN_BURST_BYTES,
@@ -139,10 +143,10 @@ _Static_assert(RING_BYTES > EXPECTED_PEAK_BACKLOG * 5u,
                "ring buffer no longer has the stated 5x margin");
 _Static_assert((RING_BYTES & (RING_BYTES - 1u)) == 0u,
                "ring size must be a power of two for the masking index");
-_Static_assert(SENSOR_FRAMES_YIELDED == 16u,
-               "sensor should yield exactly 16 of its 180 frames per second");
-_Static_assert(CAN_BURST_BYTES % SENSOR_FRAME_BYTES == 0u,
-               "a burst must be a whole number of 64 byte wire units");
+_Static_assert(SENSOR_HZ_X100_IDLE - SENSOR_HZ_X100_LOADED
+               == SENSOR_FRAMES_YIELDED_X100,
+               "the rate the sensor gives up is not the CAN load divided by "
+               "the frame size");
 _Static_assert(CAN_BURST_PERIOD_SLOTS * CAN_SLOT_NS > 999000000u &&
                CAN_BURST_PERIOD_SLOTS * CAN_SLOT_NS < 1001000000u,
                "burst period is not within a millisecond of one second");

@@ -34,36 +34,39 @@ bayt başına koşan yol.
 
 ## Sensör çerçevesi düzeni
 
-Şartnamede verilen düzen: **2 bayt başlık + 1 bayt sayaç + veri + 2 bayt
-sağlama**. Veri alanının boyutu serbest bir parametre değil — çerçeve boyu ile
-çerçeve hızının çarpımı hat hızına eşit olmak zorunda:
-
-```
-  64 B × 180 Hz = 11.520 B/s = 115.200 baud / 10     ✓ tam eşit
-```
-
-Bu da veri alanını **59 bayta** sabitler:
+Şartnamede verilen düzen: **2 bayt başlık + 1 bayt sayaç + 64 bayt veri +
+2 bayt sağlama = 69 bayt**.
 
 | Ofset | Boyut | İçerik |
 |---|---|---|
 | 0–1 | 2 | başlık `A5 5A` |
 | 2 | 1 | çerçeve sayacı |
-| 3–61 | **59** | veri |
-| 62–63 | 2 | CRC-16/CCITT-FALSE |
+| 3–66 | **64** | veri |
+| 67–68 | 2 | CRC-16/CCITT-FALSE |
 
-`config.h` bunu derleme zamanında denetliyor. Veri alanı 64 yapılırsa çerçeve
-69 bayta çıkar, 180 Hz'de 12.420 B/s gerekir ve hat 11.520 B/s taşır — **üç
-ayrı iddia birden düşer** ve derleme kırılır:
+**Çerçeve hızı bir ayar değil, bir sonuç.** Sensör akışı sürekli: çerçeveler
+arka arkaya, aralıksız çıkıyor. Dolayısıyla hattı yapısı gereği dolduruyor ve
+hız ne çıkarsa o:
 
 ```
-error: static assertion failed: "frame size times frame rate is not the
-line rate: with this payload the sensor stream either starves the line or
-oversubscribes it, and the ring buffer analysis does not hold"
-error: static assertion failed: "sensor should yield exactly 16 of its 180
-frames per second"
-error: static assertion failed: "a burst must be a whole number of 64 byte
-wire units"
+  boşta      11.520 / 69 = 166,96 Hz
+  CAN varken 10.496 / 69 = 152,12 Hz
 ```
+
+69 sayısı 11.520'yi tam bölmüyor, bölmesi de gerekmiyor — tam sayı bir çerçeve
+hızı yok.
+
+**Köprü trafiği hiç çerçevelenmiyor.** Loopback'te gönderilen her şey geri
+geldiği için iki akış hattı paylaşıyor; ama köprü baytlarının hepsi ≤ 0x7F
+olduğu ve `0xA5` yalnızca gerçek bir başlığın ilk baytı olarak görünebildiği
+için alıcı `A5 5A` ararken onların üstünden yürüyüp geçiyor. Sarmalama yükü
+sıfır — **bu yüzden bir patlamanın taşıdığı 1024 bayt, halkaya giren 1024
+baytın tam olarak kendisi, ve 796 aritmetiği olduğu gibi geçerli kalıyor.**
+
+Köprü baytları göz ardı edilmiyor: bir sayma deseni taşıyorlar ve alıcı onu
+denetliyor. Bir patlama kesintisiz 1024 bayt olduğundan, kaybolan ya da bozulan
+tek bir bayt sayımı kırıyor ve **ISO-TP yeniden birleştirme hatası** olarak
+raporlanıyor.
 
 Sayaç 1 bayt olduğu için 256 çerçevede bir sarıyor — 180 Hz'de 1,42 saniye.
 Boşluk tespiti işaretsiz 8 bit aritmetiğiyle yapılıyor ve sarma boyunca doğru
@@ -92,25 +95,24 @@ kaybı, ki o çoktan diğer sayaçlara yansırdı.
 | Hatta geçen bayt | 11.521 B/s | 11.520 B/s |
 | — sensör payı | 10.497 B/s | 10.496 B/s |
 | — köprü payı | 1.024 B/s | 1.024 B/s |
-| Sensör çerçevesi, boşta | 180,0 Hz | 180 Hz |
-| **Sensör çerçevesi, CAN yükü altında** | **164,3 Hz** | **164 Hz** |
+| **Sensör çerçevesi, CAN yükü altında** | **152,56 Hz** | **152,12 Hz** |
 
 11.521 ile 11.520 arasındaki fark uydurma değil: baud bölücüsü 115.200 yerine
 115.207 üretiyor, yani hat nominalden 61 ppm hızlı. Ölçüm bunu görüyor.
 
 Sensörün 180'den 164'e düşmesi bir arıza değil, **tasarımın kendisi**. Hat
 aşırı abone: 11.520 B/s sensör + 1.024 B/s CAN, kapasite 11.520 B/s. Hakem
-köprüye mutlak öncelik veriyor, bedeli sensör ödüyor — saniyede tam
-1024 / 64 = **16 çerçeve**.
+köprüye öncelik veriyor, bedeli sensör ödüyor — saniyede
+1024 / 69 = **14,84 çerçeve**.
 
 ### CAN tarafı
 
 | Nicelik | Ölçülen | Hesap |
 |---|---|---|
-| Patlama | 105 | 105 (saniyede bir) |
-| CAN çerçevesi | 15.435 | 15.435 = 105 × 147 |
-| Köprü yükü | 107.520 B | 107.520 B = 105 × 1024 |
-| Yeniden birleştirilen ISO-TP birimi | 1.680 | 1.680 = 105 × 16 |
+| Patlama | 58 | 58 (saniyede bir) |
+| CAN çerçevesi | 8.526 | 8.526 = 58 × 147 |
+| Köprü yükü | 59.392 B | 59.392 B = 58 × 1024 |
+| Karşı tarafta birleştirilen patlama | **58** | 58 (hepsi) |
 | **Birleştirme hatası** | **0** | 0 |
 
 Üçü de **tam** tutuyor, yuvarlama yok. 147 çerçevenin dağılımı:
@@ -131,8 +133,8 @@ yuva 146          blok sonu
 | Nicelik | Ölçülen | Hesap |
 |---|---|---|
 | RX halkası tepe | 12 / 4096 B | ~12 B |
-| **Köprü halkası tepe** | **878 B** | 796 B → **798–885 B** |
-| Aritmetiğe göre sapma | %+10,3 | %+1,8 … %+9,7 |
+| **Köprü halkası tepe** (en düşük / ortalama / en yüksek) | **796 / 831 / 866 B** | **796 … 864 B** |
+| Aritmetiğe göre sapma | %0 … %+8,8 | %0 … %+8,5 |
 | Kalan halka payı | **4,7 kat** | ~5 kat |
 | Halka taşması | 0 | 0 |
 

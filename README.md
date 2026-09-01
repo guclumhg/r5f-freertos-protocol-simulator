@@ -16,8 +16,13 @@ behaviour can be measured on hardware I actually have.
 ## What it measures
 
 Everything below is measured on the board, not calculated. Numbers are from a
-70 second run with the CAN side active; `docs/olcumler.md` has the full table
+60 second run with the CAN side active; `docs/olcumler.md` has the full table
 and the method.
+
+The sensor frame is 69 bytes - two header, one counter, sixty four of data,
+two of checksum - and the stream is continuous, so it fills the line by
+construction and its rate is a consequence rather than a setting:
+11 520 / 69 = 166.96 Hz idle, 152.12 Hz once the CAN side takes its 1 024 B/s.
 
 | | measured | predicted |
 |---|---|---|
@@ -27,12 +32,11 @@ and the method.
 | byte deadline | 13 020 cycles / 86.8 µs | 86.8 µs |
 | **worst-case margin** | **99.71 %** (343× headroom) | — |
 | line throughput | 11 521 B/s | 11 520 B/s |
-| sensor frame rate, idle | 180.0 Hz | 180 Hz |
-| sensor frame rate, under CAN load | **164.2 Hz** | **164 Hz** |
+| sensor frame rate, under CAN load | **152.56 Hz** | **152.12 Hz** |
 | CAN frames per burst | 147 | 147 |
 | bridge payload per burst | 1 024 B | 1 024 B |
-| ISO-TP units reassembled | 16 per burst, 0 failures | 16 |
-| **peak bridge backlog** | **877 B** | 796 B → **798–885 B** (see below) |
+| bursts reassembled at the far end | 58 of 58, 0 failures | all |
+| **peak bridge backlog** | **796 / 831 / 866 B** (min/mean/max) | **796–864 B** |
 | remaining ring margin | 4.7× | ~5× |
 | CRC errors, counter gaps, overruns, overflows, stalls | **0** | 0 |
 
@@ -55,22 +59,20 @@ This is the finding that transfers most directly. The specification says the
 bridge will run out of TCM on the R5F; this is what that decision is worth,
 measured.
 
-**2. The 796-byte prediction is right to within 10 %, and the difference is
-framing.**
+**2. The 796-byte prediction is the exact best case, and the spread above it
+is frame atomicity.**
 
 The arithmetic — 1024 bytes in, 228 drained during the 19.845 ms burst, 796
-left over — assumes a byte can leave the instant it arrives. Two things on a
-real link delay the drain:
+left over — assumes the drain starts the instant the burst does. The bridge
+sends its bytes unframed, so there is nothing to assemble first; the one thing
+that delays it is that it can only take the line at a **sensor frame
+boundary**, because a frame cut in half could not be reassembled at the far
+end. Worst case it has just missed one and waits 68 byte times, 5.90 ms.
 
-- The bridge cannot transmit half a unit. The first 64-byte unit is not
-  complete until eight consecutive frames have arrived: nine slots, 1.215 ms.
-- It cannot cut into a sensor frame already on the wire, so it waits up to one
-  whole frame: 63 byte times, 5.47 ms.
-
-The drain therefore starts between 1.215 ms and 6.683 ms into the burst, which
-puts the peak between 810 and 873 bytes. The burst trace samples every 12 byte
-times, so an observed peak can sit 12 bytes either side: **798 to 885**. All 69
-captured bursts landed inside that band. The 4096-byte ring keeps 4.7× margin.
+That puts the peak between **796 and 864** bytes. Measured over 59 captured
+bursts: minimum **796** — exactly the arithmetic — mean 831, maximum 866, and
+every burst inside the band once the trace's own 12-byte sampling resolution is
+allowed for. The 4096-byte ring keeps 4.7× margin.
 
 ## How it works
 
@@ -78,10 +80,10 @@ captured bursts landed inside that band. The 4096-byte ring keeps 4.7× margin.
   ┌──────────────── Raspberry Pi Pico 2W (RP2350) ─────────────────┐
   │                                                                │
   │  sensor task ──► sensor ring ──┐                               │
-  │   2+1+59+2 B       256 B       │                               │
+  │   2+1+64+2 = 69 B  256 B       │                               │
   │   CRC-16                       ├──► byte tick IRQ ──► UART0 TX │
   │                                │    every 86.8 µs        │     │
-  │  CAN sim IRQ ──► bridge ring ──┘    unit-atomic          │     │
+  │  CAN sim IRQ ──► bridge ring ──┘    frame-atomic         │     │
   │   135 µs slots     4096 B           bridge first    PL011 loop │
   │   147 frames                                             │     │
   │                                                          ▼     │
@@ -127,7 +129,7 @@ the target.
 firmware/src/
   engine/          ← moves to the R5F unchanged
     engine.c   the bridge, the arbiter, the rings
-    frame.c    64 byte units, CRC-16/CCITT, streaming demultiplexer
+    frame.c    the 69 byte frame, CRC-16/CCITT, streaming receiver
     isotp.c    the 147-frame ISO-TP burst
     ringbuf.h  lock-free single-producer / single-consumer ring
     metrics.h  min / mean / max cheap enough for an interrupt

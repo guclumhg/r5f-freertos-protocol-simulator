@@ -16,10 +16,15 @@
  *   19 protocol frames (1 FF + 16 FC + 1 FC + 1 end)
  *   147 frames x 135 us                              = 19.845 ms
  *
- * Those 1024 bytes are the bridge's payload for the second. They happen to be
- * laid out as 16 units of 64 bytes, which is what lets the far end of the
- * loopback tell them apart from sensor frames, and which is also why the
- * sensor stream gives up exactly 1024/64 = 16 of its 180 frames per second.
+ * Those 1024 bytes are the bridge's payload for the second, and they go onto
+ * the wire with no framing of their own. They carry a counting pattern that
+ * never exceeds 0x7F, so they can never forge a sensor frame header and the
+ * receiver walks straight over them - while still checking the count, which is
+ * what turns a lost byte into a reported reassembly error.
+ *
+ * No framing also means no overhead: the 1024 bytes a burst delivers are
+ * exactly the 1024 bytes that queue up in the ring, which is what keeps the
+ * 796 byte arithmetic meaningful.
  */
 #ifndef R5F_ISOTP_H
 #define R5F_ISOTP_H
@@ -30,7 +35,6 @@
 #include "config.h"
 #include "engine/frame.h"
 
-#define ISOTP_UNITS_PER_BURST (CAN_BURST_BYTES / FRAME_LEN)   /* 16 */
 #define ISOTP_SLOTS_PER_BLOCK (1u + ISOTP_BLOCK_SIZE)         /* FC + 8 CF */
 
 typedef enum {
@@ -48,8 +52,7 @@ typedef struct {
     uint32_t since_burst;     /* slots since the last burst started */
     uint8_t  burst_seq;
 
-    uint8_t  unit[FRAME_LEN]; /* the 64 byte unit currently being handed over */
-    uint8_t  unit_index;
+    uint32_t burst_pos;       /* bytes handed over so far in this burst */
 
     uint32_t bursts;
     uint32_t frames;          /* CAN frames generated, all kinds */

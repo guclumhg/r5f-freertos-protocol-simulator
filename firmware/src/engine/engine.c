@@ -52,8 +52,8 @@ static volatile uint32_t s_tx_stalls;
 static volatile uint32_t s_uart_overrun;
 static volatile uint32_t s_frames_built;
 
-/* Transmit arbiter. The line is handed out in whole 64 byte units, never
- * switched mid unit - see the note in engine.h. */
+/* Transmit arbiter. Sensor frames go out whole; a bridge run goes out whole.
+ * See the note in engine.h. */
 static uint32_t s_tx_remaining;
 static bool     s_tx_from_bridge;
 
@@ -121,36 +121,44 @@ void PORT_HOT(engine_on_rx_byte)(uint8_t b, uint32_t dr_flags)
 void PORT_HOT(engine_on_byte_tick)(void)
 {
     uint8_t b;
+    bool    sent = false;
 
+    /* The arbiter only ever changes its mind at a frame boundary. A sensor
+     * frame cut in half could not be reassembled at the far end, and a bridge
+     * run cut in half could not either - so once one of them has the line, it
+     * keeps it until it is finished. */
     if (s_tx_remaining == 0u) {
-        /* Start of a unit: bridge traffic takes the line whenever it has a
-         * whole unit ready. The sensor stream is what pays for the burst. */
-        if (rb_count(&s_bridge_ring) >= FRAME_LEN) {
-            s_tx_from_bridge = true;
-            s_tx_remaining   = FRAME_LEN;
-        } else if (rb_count(&s_sensor_ring) >= FRAME_LEN) {
-            s_tx_from_bridge = false;
-            s_tx_remaining   = FRAME_LEN;
+        s_tx_from_bridge = !rb_empty(&s_bridge_ring);
+    }
+
+    if (s_tx_from_bridge) {
+        if (rb_pop(&s_bridge_ring, &b)) {
+            sent = true;
+            if (port_uart_tx(b)) { s_bytes_tx_bridge++; }
+            else                 { s_tx_stalls++; }
         } else {
-            s_idle_ticks++;
-            goto sample;
+            /* Drained. The sensor may start a frame in this same tick. */
+            s_tx_from_bridge = false;
         }
     }
 
-    if (rb_pop(s_tx_from_bridge ? &s_bridge_ring : &s_sensor_ring, &b)) {
-        s_tx_remaining--;
-        if (port_uart_tx(b)) {
-            if (s_tx_from_bridge) { s_bytes_tx_bridge++; }
-            else                  { s_bytes_tx_sensor++; }
-        } else {
-            s_tx_stalls++;
+    if (!sent) {
+        if (s_tx_remaining == 0u &&
+            rb_count(&s_sensor_ring) >= SENSOR_FRAME_BYTES) {
+            s_tx_remaining = SENSOR_FRAME_BYTES;
         }
-    } else {
-        s_tx_remaining = 0u;      /* cannot happen; recover rather than wedge */
+        if (s_tx_remaining > 0u && rb_pop(&s_sensor_ring, &b)) {
+            s_tx_remaining--;
+            sent = true;
+            if (port_uart_tx(b)) { s_bytes_tx_sensor++; }
+            else                 { s_tx_stalls++; }
+        }
+    }
+
+    if (!sent) {
         s_idle_ticks++;
     }
 
-sample:
     if (++s_tick_count >= TRACE_TICK_DIVISOR) {
         s_tick_count = 0;
         if (s_trace_active) {
@@ -318,8 +326,7 @@ void engine_get_stats(engine_stats_t *out)
     out->counter_gaps    = s_verifier.counter_gaps;
     out->resyncs         = s_verifier.resyncs;
     out->frames_built    = s_frames_built;
-    out->units_ok        = s_verifier.units_ok;
-    out->unit_crc_errors = s_verifier.unit_crc_errors;
+    out->bridge_bursts   = s_verifier.bridge_bursts;
     out->isotp_errors    = s_verifier.isotp_errors;
 
     out->can_bursts     = s_tp.bursts;

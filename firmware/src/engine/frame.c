@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-enum { ST_SYNC0 = 0, ST_KIND, ST_COLLECT };
+enum { ST_SYNC0 = 0, ST_SYNC1, ST_COLLECT };
 
 uint16_t frame_crc16(const uint8_t *data, uint32_t len)
 {
@@ -18,41 +18,22 @@ uint16_t frame_crc16(const uint8_t *data, uint32_t len)
     return crc;
 }
 
-static void seal(uint8_t *out)
-{
-    uint16_t crc = frame_crc16(out, FRAME_LEN - 2u);
-    out[FRAME_LEN - 2u] = (uint8_t)(crc & 0xFFu);
-    out[FRAME_LEN - 1u] = (uint8_t)(crc >> 8);
-}
-
 void frame_build_sensor(uint8_t *out, uint8_t counter)
 {
     out[0] = FRAME_SYNC0;
-    out[1] = FRAME_KIND_SENSOR;
+    out[1] = FRAME_SYNC1;
     out[2] = counter;
 
-    /* Masked to 7 bits so 0xA5 can never appear in the payload. */
+    /* Masked to 7 bits, so 0xA5 can never occur inside the data and no data
+     * pattern can forge the header. */
     for (uint32_t i = 0; i < FRAME_PAYLOAD_BYTES; i++) {
         out[FRAME_HEADER_BYTES + FRAME_COUNTER_BYTES + i] =
             (uint8_t)((counter + i) & 0x7Fu);
     }
-    seal(out);
-}
 
-/* The bridge unit is this project's own framing, not the given one. It only
- * has to be the same length as a sensor frame - so the transmit arbiter can
- * hand the line over in equal units - and to be told apart by byte 1. */
-void frame_build_bridge(uint8_t *out, uint8_t unit_index, uint8_t burst_seq)
-{
-    out[0] = FRAME_SYNC0;
-    out[1] = FRAME_KIND_BRIDGE;
-    out[2] = unit_index;
-    out[3] = (uint8_t)(burst_seq & 0x7Fu);
-
-    for (uint32_t i = 0; i < FRAME_LEN - 6u; i++) {
-        out[4 + i] = (uint8_t)((burst_seq + unit_index + i) & 0x7Fu);
-    }
-    seal(out);
+    uint16_t crc = frame_crc16(out, FRAME_LEN - FRAME_CRC_BYTES);
+    out[FRAME_LEN - 2u] = (uint8_t)(crc & 0xFFu);
+    out[FRAME_LEN - 1u] = (uint8_t)(crc >> 8);
 }
 
 void frame_rx_init(frame_rx_t *fr)
@@ -61,10 +42,37 @@ void frame_rx_init(frame_rx_t *fr)
     fr->state = ST_SYNC0;
 }
 
-static void check_sensor(frame_rx_t *fr)
+/* A byte that is not part of a sensor frame belongs to the bridge. Check it
+ * against the pattern the CAN side is sending, and count a completed burst
+ * every 1024 of them. */
+static void bridge_byte(frame_rx_t *fr, uint8_t b)
 {
-    uint8_t counter = fr->buf[2];
+    if (b != bridge_byte_at(fr->bridge_bytes)) {
+        fr->isotp_errors++;
+        /* Resynchronise on the byte we actually got, so one bad byte is one
+         * error rather than a thousand. */
+        fr->bridge_bytes = (fr->bridge_bytes & ~0x7Fu) | ((b + 1u) & 0x7Fu);
+        return;
+    }
+    if (++fr->bridge_bytes >= CAN_BURST_BYTES) {
+        fr->bridge_bytes = 0;
+        fr->bridge_bursts++;
+    }
+}
 
+static void check_frame(frame_rx_t *fr)
+{
+    uint16_t want = frame_crc16(fr->buf, FRAME_LEN - FRAME_CRC_BYTES);
+    uint16_t got  = (uint16_t)fr->buf[FRAME_LEN - 2u] |
+                    (uint16_t)((uint16_t)fr->buf[FRAME_LEN - 1u] << 8);
+
+    if (want != got) {
+        fr->crc_errors++;
+        fr->resyncs++;
+        return;
+    }
+
+    uint8_t counter = fr->buf[2];
     if (fr->have_last) {
         uint8_t expected = (uint8_t)(fr->last_counter + 1u);
         if (counter != expected) {
@@ -80,50 +88,32 @@ static void check_sensor(frame_rx_t *fr)
     fr->snapshot_seq++;
 }
 
-static void check_bridge(frame_rx_t *fr)
-{
-    uint8_t unit = fr->buf[2];
-    uint8_t seq  = fr->buf[3];
-
-    if (fr->have_last_unit) {
-        bool ok;
-        if (fr->last_unit_index + 1u < CAN_BURST_BYTES / FRAME_LEN) {
-            /* still inside a burst: the next unit must follow */
-            ok = (unit == fr->last_unit_index + 1u) && (seq == fr->last_burst_seq);
-        } else {
-            /* end of a burst: the next unit must open the next one */
-            ok = (unit == 0u) && (seq == (uint8_t)((fr->last_burst_seq + 1u) & 0x7Fu));
-        }
-        if (!ok) {
-            fr->isotp_errors++;
-        }
-    }
-    fr->have_last_unit  = true;
-    fr->last_unit_index = unit;
-    fr->last_burst_seq  = seq;
-    fr->units_ok++;
-}
-
 bool frame_rx_byte(frame_rx_t *fr, uint8_t b)
 {
     switch (fr->state) {
     case ST_SYNC0:
         if (b == FRAME_SYNC0) {
             fr->buf[0] = b;
-            fr->state  = ST_KIND;
+            fr->state  = ST_SYNC1;
+        } else {
+            bridge_byte(fr, b);
         }
         return false;
 
-    case ST_KIND:
-        if (b == FRAME_KIND_SENSOR || b == FRAME_KIND_BRIDGE) {
+    case ST_SYNC1:
+        if (b == FRAME_SYNC1) {
             fr->buf[1] = b;
-            fr->kind   = b;
             fr->fill   = 2;
             fr->state  = ST_COLLECT;
         } else if (b == FRAME_SYNC0) {
             /* stay here: A5 A5 5A is still a valid opening */
         } else {
+            /* The 0xA5 was not a header after all. It cannot have been a
+             * bridge byte either - those are all <= 0x7F - so something is
+             * wrong on the line. */
+            fr->resyncs++;
             fr->state = ST_SYNC0;
+            bridge_byte(fr, b);
         }
         return false;
 
@@ -137,24 +127,14 @@ bool frame_rx_byte(frame_rx_t *fr, uint8_t b)
         break;
     }
 
-    uint16_t want = frame_crc16(fr->buf, FRAME_LEN - 2u);
-    uint16_t got  = (uint16_t)fr->buf[FRAME_LEN - 2u] |
-                    (uint16_t)((uint16_t)fr->buf[FRAME_LEN - 1u] << 8);
-
-    if (want != got) {
-        if (fr->kind == FRAME_KIND_BRIDGE) {
-            fr->unit_crc_errors++;
-        } else {
-            fr->crc_errors++;
-        }
-        fr->resyncs++;
-        return false;
+    /* A frame arriving part way through a burst means the transmit arbiter
+     * cut a bridge run in half, which the far end could not reassemble. */
+    if (fr->bridge_bytes != 0u) {
+        fr->isotp_errors++;
+        fr->bridge_bytes = 0;
     }
 
-    if (fr->kind == FRAME_KIND_BRIDGE) {
-        check_bridge(fr);
-    } else {
-        check_sensor(fr);
-    }
-    return true;
+    uint32_t before = fr->frames_ok;
+    check_frame(fr);
+    return fr->frames_ok != before;
 }

@@ -11,18 +11,20 @@
  *   rx_ring      (4096 B)  UART RX IRQ   -> protocol task
  *
  * The transmit line is one byte every 86.8 us and the byte tick interrupt is
- * the arbiter for it. Bridge traffic wins every slot it wants; the sensor
- * stream fills what is left. The line is oversubscribed on purpose - 11520 B/s
- * of sensor plus 1024 B/s of CAN against 11520 B/s of capacity - so during a
- * burst the bridge backlog is what grows, and the sensor gives up exactly 16
- * of its 180 frames per second to pay for it.
+ * the arbiter for it. The sensor stream is continuous, so it fills the line by
+ * construction; the bridge takes the line at the next frame boundary whenever
+ * it has anything, and keeps it until it has nothing. The line is
+ * oversubscribed on purpose - a full sensor stream plus 1024 B/s of CAN
+ * against 11520 B/s of capacity - so during a burst the bridge backlog is what
+ * grows, and the sensor gives up 1024 bytes worth of its rate to pay for it.
  *
- * The arbiter switches only on 64 byte boundaries. It has to: the UART is in
- * loopback, so everything transmitted comes straight back to the receiver, and
- * a unit cut in half by the other stream could not be reassembled. That
- * atomicity costs up to 63 byte times of extra latency at the start of a
- * burst, which is why the measured peak backlog sits above the arithmetic
- * 796 rather than exactly on it.
+ * The arbiter changes its mind only at a frame boundary. It has to: the UART
+ * is in loopback, so everything transmitted comes straight back to the
+ * receiver, and neither a sensor frame nor a bridge run could be reassembled
+ * if the other stream cut it in half. That atomicity costs up to one frame -
+ * 68 byte times - at the start of a burst, which is why the measured peak
+ * backlog sits at or a little above the arithmetic 796 rather than exactly on
+ * it.
  */
 #ifndef R5F_ENGINE_H
 #define R5F_ENGINE_H
@@ -61,9 +63,8 @@ typedef struct {
     uint32_t resyncs;
     uint32_t frames_built;
 
-    /* bridge stream */
-    uint32_t units_ok;
-    uint32_t unit_crc_errors;
+    /* bridge stream, carried unframed and checked by its counting pattern */
+    uint32_t bridge_bursts;   /* complete 1024 byte runs reassembled */
     uint32_t isotp_errors;
 
     /* CAN side */

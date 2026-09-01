@@ -21,7 +21,7 @@ isotp_slot_kind_t isotp_slot(isotp_t *tp, uint8_t *out, bool *started)
         tp->active      = true;
         tp->slot        = 0;
         tp->since_burst = 0;
-        tp->unit_index  = 0;
+        tp->burst_pos   = 0;
         tp->burst_seq++;
         tp->bursts++;
         *started = true;
@@ -49,17 +49,15 @@ isotp_slot_kind_t isotp_slot(isotp_t *tp, uint8_t *out, bool *started)
     const uint32_t pos   = idx % ISOTP_SLOTS_PER_BLOCK; /* 0..8  */
 
     if (pos == 0) {
-        /* The receiver says go ahead, and the next 64 bytes of payload are
-         * prepared here so the consecutive frames only have to copy. */
-        tp->unit_index = (uint8_t)block;
-        frame_build_bridge(tp->unit, tp->unit_index, tp->burst_seq);
+        (void)block;                 /* the receiver says go ahead */
         return ISOTP_SLOT_FLOW_CONTROL;
     }
 
-    const uint32_t offset = (pos - 1u) * CAN_FRAME_PAYLOAD;
+    /* A consecutive frame carries eight bytes of the burst's payload. */
     for (uint32_t i = 0; i < CAN_FRAME_PAYLOAD; i++) {
-        out[i] = tp->unit[offset + i];
+        out[i] = bridge_byte_at(tp->burst_pos + i);
     }
+    tp->burst_pos  += CAN_FRAME_PAYLOAD;
     tp->data_bytes += CAN_FRAME_PAYLOAD;
     return ISOTP_SLOT_CONSECUTIVE;
 }

@@ -136,7 +136,8 @@ void telemetry_task(void *arg)
              * from constants of its own, so config.h stays the single source
              * of truth all the way out to the browser. */
             "\"limits\":{\"ring\":%u,\"expect_peak\":%u,\"burst_ms_x10\":%u,"
-                        "\"sensor_hz\":%u,\"sensor_hz_burst\":%u},",
+                        "\"frame_bytes\":%u,"
+                        "\"sensor_hz_x100\":%u,\"sensor_hz_burst_x100\":%u},",
             (unsigned long)((unsigned long)xTaskGetTickCount() * portTICK_PERIOD_MS),
             (unsigned)seq++,
             (unsigned)port_clk_hz(), (unsigned)port_actual_baud(),
@@ -145,8 +146,9 @@ void telemetry_task(void *arg)
             (unsigned)BYTE_TIME_CYCLES, (unsigned)BYTE_TIME_NS,
             (unsigned)RING_BYTES, (unsigned)EXPECTED_PEAK_BACKLOG,
             (unsigned)(CAN_BURST_NS / 100000u),
-            (unsigned)SENSOR_FRAME_HZ,
-            (unsigned)(SENSOR_FRAME_HZ - SENSOR_FRAMES_YIELDED));
+            (unsigned)SENSOR_FRAME_BYTES,
+            (unsigned)SENSOR_HZ_X100_IDLE,
+            (unsigned)SENSOR_HZ_X100_LOADED);
 
         w_printf(&w,
             "\"isr\":{\"last\":%u,\"min\":%u,\"mean\":%u,\"max\":%u,\"n\":%u},",
@@ -181,11 +183,10 @@ void telemetry_task(void *arg)
 
         w_printf(&w,
             "\"can\":{\"bursts\":%u,\"frames\":%u,\"data\":%u,\"active\":%d,"
-                    "\"units\":%u,\"unit_crc\":%u,\"isotp_err\":%u},",
+                    "\"reassembled\":%u,\"isotp_err\":%u},",
             (unsigned)s_stats.can_bursts, (unsigned)s_stats.can_frames,
             (unsigned)s_stats.can_data_bytes, s_stats.burst_active ? 1 : 0,
-            (unsigned)s_stats.units_ok, (unsigned)s_stats.unit_crc_errors,
-            (unsigned)s_stats.isotp_errors);
+            (unsigned)s_stats.bridge_bursts, (unsigned)s_stats.isotp_errors);
 
         w_printf(&w,
             "\"req\":{\"sent\":%u,\"answered\":%u,\"failed\":%u,"
