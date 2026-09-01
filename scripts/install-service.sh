@@ -16,7 +16,7 @@ After=network-online.target
 Type=simple
 User=${USER_NAME}
 WorkingDirectory=${ROOT}
-ExecStart=/usr/bin/python3 ${ROOT}/server/app.py --port ${PORT}
+ExecStart=/usr/bin/python3 ${ROOT}/server/app.py --port ${PORT} --log ${ROOT}/logs/session.ndjson
 Restart=always
 RestartSec=2
 
@@ -32,7 +32,10 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=tty
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now r5f-dashboard.service
+sudo systemctl enable r5f-dashboard.service
+# restart, not start: enable --now leaves an already running service on the
+# old unit file after a daemon-reload
+sudo systemctl restart r5f-dashboard.service
 sleep 1
 sudo systemctl --no-pager --lines=5 status r5f-dashboard.service || true
 

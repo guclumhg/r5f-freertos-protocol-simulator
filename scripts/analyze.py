@@ -172,8 +172,10 @@ def main(path):
         row("failed", str(delta("req", "failed")), "0")
         row("answer latency, mean",
             f"{us(last['req']['lat_mean']):.0f} us", "~500 us (1 ms poll)")
+        # One poll period plus however long the task waits to be scheduled,
+        # so a little over a tick rather than exactly a tick.
         row("answer latency, worst",
-            f"{us(last['req']['lat_max']):.0f} us", "< 1000 us")
+            f"{us(last['req']['lat_max']):.0f} us", "1 ms poll + jitter")
     print("=" * W)
     print()
 
