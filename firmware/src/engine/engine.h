@@ -1,21 +1,28 @@
 /*
  * engine.h - The protocol bridge itself.
  *
- * Portable C on top of port.h. This is the code the project claims would move
- * to the Cortex-R5F unchanged.
+ * Portable C on top of port.h and FreeRTOS. This is the code the project
+ * claims would move to the Cortex-R5F unchanged.
  *
  * Three rings, each with exactly one writer and one reader:
  *
- *   sensor_ring  (256 B)   sensor task            -> byte tick ISR
- *   bridge_ring  (4096 B)  CAN slot ISR           -> byte tick ISR
- *   rx_ring      (4096 B)  UART RX ISR            -> protocol task
+ *   sensor_ring  (256 B)   sensor task   -> byte tick interrupt
+ *   bridge_ring  (4096 B)  CAN slot IRQ  -> byte tick interrupt
+ *   rx_ring      (4096 B)  UART RX IRQ   -> protocol task
  *
- * The transmit line is one byte every 86.8 us and the byte tick ISR is the
- * arbiter for it. Bridge traffic wins every slot it wants; the sensor stream
- * fills what is left. The line is oversubscribed on purpose - 11520 B/s of
- * sensor plus 1024 B/s of CAN against 11520 B/s of capacity - so during a
+ * The transmit line is one byte every 86.8 us and the byte tick interrupt is
+ * the arbiter for it. Bridge traffic wins every slot it wants; the sensor
+ * stream fills what is left. The line is oversubscribed on purpose - 11520 B/s
+ * of sensor plus 1024 B/s of CAN against 11520 B/s of capacity - so during a
  * burst the bridge backlog is what grows, and the sensor gives up exactly 16
  * of its 180 frames per second to pay for it.
+ *
+ * The arbiter switches only on 64 byte boundaries. It has to: the UART is in
+ * loopback, so everything transmitted comes straight back to the receiver, and
+ * a unit cut in half by the other stream could not be reassembled. That
+ * atomicity costs up to 63 byte times of extra latency at the start of a
+ * burst, which is why the measured peak backlog sits above the arithmetic
+ * 796 rather than exactly on it.
  */
 #ifndef R5F_ENGINE_H
 #define R5F_ENGINE_H
@@ -28,8 +35,7 @@
 #include "engine/metrics.h"
 #include "engine/ringbuf.h"
 
-/* Everything the telemetry task needs, copied out under a short critical
- * section so a burst cannot tear the numbers apart mid-read. */
+/* Everything the telemetry task needs. */
 typedef struct {
     /* receive interrupt cost, in core clock cycles */
     stat_t   isr;
@@ -48,14 +54,32 @@ typedef struct {
     uint32_t uart_overrun_hw; /* same thing read from the status register,
                                * as an independent cross-check */
 
-    /* frames */
+    /* sensor stream, verified after a full trip round the loopback */
     uint32_t frames_ok;
     uint32_t crc_errors;
     uint32_t counter_gaps;
     uint32_t resyncs;
     uint32_t frames_built;
 
-    /* burst trace: bridge_ring occupancy, one sample every 12 byte ticks */
+    /* bridge stream */
+    uint32_t units_ok;
+    uint32_t unit_crc_errors;
+    uint32_t isotp_errors;
+
+    /* CAN side */
+    uint32_t can_bursts;
+    uint32_t can_frames;
+    uint32_t can_data_bytes;
+    bool     burst_active;
+
+    /* request / response: the CAN side asks for the last sensor frame and the
+     * engine answers from a snapshot, dequeuing nothing */
+    uint32_t requests;
+    uint32_t responses;
+    uint32_t response_failures;
+    stat_t   response_latency;   /* cycles from request to answer */
+
+    /* burst trace: bridge ring occupancy, one sample every 12 byte ticks */
     uint16_t trace[BURST_TRACE_SAMPLES];
     uint32_t trace_seq;       /* increments once per captured burst */
     uint16_t trace_len;

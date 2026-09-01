@@ -201,6 +201,11 @@ uint32_t port_clk_hz(void)      { return s_clk_hz; }
 uint32_t port_actual_baud(void) { return s_actual_baud; }
 loopback_mode_t port_loopback_mode(void) { return s_mode; }
 
+void __not_in_flash_func(port_probe_burst)(bool on)
+{
+    gpio_put(PIN_PROBE_BURST, on);
+}
+
 bool __not_in_flash_func(port_uart_tx)(uint8_t b)
 {
     if (!uart_is_writable(uart0)) {

@@ -57,6 +57,12 @@
 #define CAN_BURST_NS            19845000u   /* 147 * 135 us = 19.845 ms */
 #define CAN_BUS_LOAD_PERMILLE   20u         /* 19.845 ms / 1 s = 2.0 % */
 
+/* One burst per second, counted in slots because the slot timer is the only
+ * clock the CAN side has. 135 us does not divide a second exactly, so the
+ * period is 999.945 ms rather than 1000 ms - a 55 ppm difference, reported
+ * rather than rounded away. */
+#define CAN_BURST_PERIOD_SLOTS  7407u
+
 /* ----------------------------------------------------- the whole argument */
 
 /* During one 19.845 ms burst the UART can only push out this many bytes... */
@@ -114,5 +120,12 @@ _Static_assert((RING_BYTES & (RING_BYTES - 1u)) == 0u,
                "ring size must be a power of two for the masking index");
 _Static_assert(SENSOR_FRAMES_YIELDED == 16u,
                "sensor should yield exactly 16 of its 180 frames per second");
+_Static_assert(CAN_BURST_BYTES % SENSOR_FRAME_BYTES == 0u,
+               "a burst must be a whole number of 64 byte wire units");
+_Static_assert(CAN_BURST_PERIOD_SLOTS * CAN_SLOT_NS > 999000000u &&
+               CAN_BURST_PERIOD_SLOTS * CAN_SLOT_NS < 1001000000u,
+               "burst period is not within a millisecond of one second");
+_Static_assert(CAN_BURST_PERIOD_SLOTS > ISOTP_FRAMES_TOTAL,
+               "a burst has to finish before the next one starts");
 
 #endif /* R5F_CONFIG_H */

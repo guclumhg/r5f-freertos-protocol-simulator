@@ -179,6 +179,22 @@ void telemetry_task(void *arg)
             (unsigned)s_stats.counter_gaps, (unsigned)s_stats.resyncs,
             (unsigned)s_stats.frames_built);
 
+        w_printf(&w,
+            "\"can\":{\"bursts\":%u,\"frames\":%u,\"data\":%u,\"active\":%d,"
+                    "\"units\":%u,\"unit_crc\":%u,\"isotp_err\":%u},",
+            (unsigned)s_stats.can_bursts, (unsigned)s_stats.can_frames,
+            (unsigned)s_stats.can_data_bytes, s_stats.burst_active ? 1 : 0,
+            (unsigned)s_stats.units_ok, (unsigned)s_stats.unit_crc_errors,
+            (unsigned)s_stats.isotp_errors);
+
+        w_printf(&w,
+            "\"req\":{\"sent\":%u,\"answered\":%u,\"failed\":%u,"
+                    "\"lat_mean\":%u,\"lat_max\":%u},",
+            (unsigned)s_stats.requests, (unsigned)s_stats.responses,
+            (unsigned)s_stats.response_failures,
+            (unsigned)stat_mean(&s_stats.response_latency),
+            (unsigned)s_stats.response_latency.max);
+
         cpu_json(&w);
 
         /* The burst trace only goes out on the packet after a burst finished,

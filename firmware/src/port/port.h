@@ -67,6 +67,10 @@ uint32_t port_clk_hz(void);
  * rather than hidden. */
 uint32_t port_actual_baud(void);
 
+/* Drives the probe pin that is high for the length of a CAN burst, so the
+ * 19.845 ms window can be confirmed on a scope rather than only believed. */
+void port_probe_burst(bool on);
+
 /* Short critical section. Used only to take consistent snapshots of counters
  * that an interrupt also writes; never held across anything slow. */
 uint32_t port_irq_save(void);

@@ -17,6 +17,7 @@ set(R5F_SOURCES
     src/telemetry.c
     src/engine/engine.c
     src/engine/frame.c
+    src/engine/isotp.c
     src/engine/ringbuf.c
     src/port/port_rp2350.c
 )

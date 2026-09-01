@@ -113,7 +113,7 @@ button.ghost {
 /* ---- stat tiles ---- */
 .tiles {
   display: grid; gap: 10px; margin-top: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 .tile {
   background: var(--surface-1); border: 1px solid var(--border);
@@ -220,9 +220,10 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 18px; display: f
     <div class="tile"><div class="lab">RX kesmesi · en kötü</div><div class="val" id="isrMax">—</div><div class="note" id="isrMaxCyc">—</div></div>
     <div class="tile"><div class="lab">RX kesmesi · tipik</div><div class="val" id="isrMean">—</div><div class="note" id="isrMeanCyc">—</div></div>
     <div class="tile"><div class="lab">Seğirme (en kötü − en iyi)</div><div class="val" id="jitter">—</div><div class="note">tek çevrim = ideal</div></div>
-    <div class="tile"><div class="lab">Köprü tamponu · tepe</div><div class="val" id="brPeak">—</div><div class="note" id="brNote">—</div></div>
+    <div class="tile"><div class="lab">Köprü tamponu · pencere tepesi</div><div class="val" id="brPeak">—</div><div class="note" id="brNote">—</div></div>
     <div class="tile"><div class="lab">RX halkası · tepe</div><div class="val" id="rxPeak">—</div><div class="note" id="rxNote">—</div></div>
     <div class="tile"><div class="lab">Sensör çerçevesi</div><div class="val" id="frameHz">—</div><div class="note" id="frameNote">—</div></div>
+    <div class="tile"><div class="lab">ISO-TP birimleri</div><div class="val" id="units">—</div><div class="note" id="unitsNote">—</div></div>
   </section>
 
   <section class="card">
@@ -438,13 +439,14 @@ function drawLive() {
 
   // burst starts: the window where occupancy first became non-zero
   ctx.save();
-  ctx.strokeStyle = css("--predicted"); ctx.globalAlpha = 0.35; ctx.lineWidth = 1;
+  ctx.strokeStyle = css("--predicted"); ctx.lineWidth = 1;
+  const base = h - PAD.b;
   for (let i = 1; i < hist.length; i++) {
     const a = hist[i - 1].bridge ? hist[i - 1].bridge.peak : 0;
     const b = hist[i].bridge ? hist[i].bridge.peak : 0;
     if (a === 0 && b > 0) {
       const x = Math.round(gx(i + (MAX_POINTS - hist.length))) + 0.5;
-      ctx.beginPath(); ctx.moveTo(x, PAD.t); ctx.lineTo(x, h - PAD.b); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, base); ctx.lineTo(x, base + 5); ctx.stroke();
     }
   }
   ctx.restore();
@@ -602,7 +604,8 @@ function paint() {
   $("isrMeanCyc").textContent = num(typical) + " çevrim";
   $("jitter").textContent = num(jitter) + " çevrim";
 
-  $("brPeak").textContent = num(s.bridge.peak) + " B";
+  const windowPeak = hist.reduce((m, r) => Math.max(m, r.bridge ? r.bridge.peak : 0), 0);
+  $("brPeak").textContent = num(windowPeak) + " B";
   $("brNote").textContent = "beklenen " + num(limits.expect_peak) + " B · halka " + num(limits.ring) + " B";
   $("rxPeak").textContent = num(s.rx.peak) + " B";
   $("rxNote").textContent = "halkanın %" + (100 * s.rx.peak / (limits.ring || 4096)).toLocaleString("tr-TR", {maximumFractionDigits:1}) + "'i";
@@ -629,6 +632,11 @@ function paint() {
   $("meterMid").textContent = (s.hw.byte_time_ns / 2000).toLocaleString("tr-TR", {minimumFractionDigits:1, maximumFractionDigits:1}) + " µs";
   $("meterMax").textContent = (s.hw.byte_time_ns / 1000).toLocaleString("tr-TR", {minimumFractionDigits:1, maximumFractionDigits:1}) + " µs";
 
+  if (s.can) {
+    $("units").textContent = num(s.can.units);
+    $("unitsNote").textContent = num(s.can.bursts) + " patlama · " +
+      num(s.can.frames) + " CAN çerçevesi · " + num(s.can.isotp_err) + " birleştirme hatası";
+  }
   $("lgPeak").textContent = num(limits.expect_peak);
   $("lgRing").textContent = num(limits.ring);
 
@@ -645,6 +653,8 @@ function paint() {
     ["CRC hatası", s.frames.crc],
     ["çerçeve sayacı boşluğu", s.frames.gaps],
     ["yeniden senkron", s.frames.resync],
+    ["köprü birimi CRC hatası", s.can ? s.can.unit_crc : 0],
+    ["ISO-TP birleştirme hatası", s.can ? s.can.isotp_err : 0],
     ["RX halka taşması", s.rx.ovf],
     ["köprü halka taşması", s.bridge.ovf],
     ["TX tıkanması", s.wire.stall],
