@@ -131,13 +131,22 @@ void telemetry_task(void *arg)
         w_printf(&w,
             "{\"v\":1,\"t\":%lu,\"seq\":%u,"
             "\"hw\":{\"clk\":%u,\"baud\":%u,\"loopback\":\"%s\",\"cyccnt\":%d,"
-                    "\"budget_cycles\":%u,\"byte_time_ns\":%u},",
+                    "\"budget_cycles\":%u,\"byte_time_ns\":%u},"
+            /* The dashboard draws its reference lines from these rather than
+             * from constants of its own, so config.h stays the single source
+             * of truth all the way out to the browser. */
+            "\"limits\":{\"ring\":%u,\"expect_peak\":%u,\"burst_ms_x10\":%u,"
+                        "\"sensor_hz\":%u,\"sensor_hz_burst\":%u},",
             (unsigned long)((unsigned long)xTaskGetTickCount() * portTICK_PERIOD_MS),
             (unsigned)seq++,
             (unsigned)port_clk_hz(), (unsigned)port_actual_baud(),
             port_loopback_mode() == LOOPBACK_INTERNAL ? "internal" : "external",
             port_cycles_ok() ? 1 : 0,
-            (unsigned)BYTE_TIME_CYCLES, (unsigned)BYTE_TIME_NS);
+            (unsigned)BYTE_TIME_CYCLES, (unsigned)BYTE_TIME_NS,
+            (unsigned)RING_BYTES, (unsigned)EXPECTED_PEAK_BACKLOG,
+            (unsigned)(CAN_BURST_NS / 100000u),
+            (unsigned)SENSOR_FRAME_HZ,
+            (unsigned)(SENSOR_FRAME_HZ - SENSOR_FRAMES_YIELDED));
 
         w_printf(&w,
             "\"isr\":{\"last\":%u,\"min\":%u,\"mean\":%u,\"max\":%u,\"n\":%u},",

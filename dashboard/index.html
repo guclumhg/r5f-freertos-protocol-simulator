@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>R5F Protokol Simülatörü</title>
+<link rel="icon" href="data:,">
+<style>
+/* Everything is inline and every colour is a literal. No CDN, no webfont, no
+   external request of any kind - this has to render in a room with no
+   internet. The palette is the validated default categorical set: slot 1 blue
+   for measured values, slot 2 orange for the predicted peak, status colours
+   for counters. Both modes were run through the palette validator. */
+
+:root {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --plane:     #0d0d0d;
+  --ink:       #ffffff;
+  --ink-2:     #c3c2b7;
+  --muted:     #898781;
+  --grid:      #2c2c2a;
+  --axis:      #383835;
+  --border:    rgba(255,255,255,0.10);
+
+  --measured:  #3987e5;   /* categorical slot 1 */
+  --predicted: #d95926;   /* categorical slot 2 */
+  /* The meter's empty track is a wash of the fill's own hue, close enough to
+     the surface to read as "nothing here". A saturated step made a bar that
+     is 0.3 % full look completely full. */
+  --track:     #15304f;
+
+  --good:      #0ca30c;
+  --warning:   #fab219;
+  --serious:   #ec835a;
+  --critical:  #d03b3b;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --surface-1: #fcfcfb;
+  --plane:     #f9f9f7;
+  --ink:       #0b0b0b;
+  --ink-2:     #52514e;
+  --muted:     #898781;
+  --grid:      #e1e0d9;
+  --axis:      #c3c2b7;
+  --border:    rgba(11,11,11,0.10);
+
+  --measured:  #2a78d6;
+  --predicted: #eb6834;
+  --track:     #dbe9fb;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--plane);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding-bottom: 40px;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 16px; }
+
+/* ---- the banner that must never scroll away ---- */
+.banner {
+  position: sticky; top: 0; z-index: 40;
+  background: #4a2410;
+  border-bottom: 2px solid var(--serious);
+  color: #ffe9dd;
+  padding: 10px 16px;
+  font-size: 13px; line-height: 1.45;
+}
+:root[data-theme="light"] .banner { background: #fdeee6; color: #5a2a10; }
+.banner b { color: var(--serious); }
+.banner .inner { max-width: 1180px; margin: 0 auto; display: flex; gap: 10px; }
+.banner .mark { flex: 0 0 auto; font-size: 15px; }
+
+header.top {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 22px 0 6px;
+}
+header.top h1 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+header.top .sub { color: var(--muted); font-size: 13px; }
+header.top .spacer { flex: 1 1 auto; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px 10px; font-size: 12px; color: var(--ink-2);
+  background: var(--surface-1);
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.dot.live { background: var(--good); }
+.dot.dead { background: var(--critical); }
+.dot.demo { background: var(--warning); }
+
+button.ghost {
+  background: var(--surface-1); color: var(--ink-2);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer;
+}
+
+/* ---- hero ---- */
+.hero {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 12px; padding: 18px 20px; margin-top: 12px;
+  display: flex; gap: 26px; align-items: center; flex-wrap: wrap;
+}
+.hero .fig { font-size: 54px; font-weight: 600; line-height: 1; letter-spacing: -0.02em; }
+.hero .cap { color: var(--ink-2); font-size: 13px; max-width: 46ch; }
+.hero .cap strong { color: var(--ink); font-weight: 600; }
+
+/* ---- stat tiles ---- */
+.tiles {
+  display: grid; gap: 10px; margin-top: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.tile {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px;
+}
+.tile .lab { color: var(--muted); font-size: 12px; }
+.tile .val { font-size: 22px; font-weight: 600; margin-top: 3px; }
+.tile .note { color: var(--ink-2); font-size: 12px; margin-top: 2px; }
+.tile.err .val { color: var(--ink); }
+
+/* ---- meter ---- */
+.card {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 12px; padding: 16px 18px; margin-top: 12px;
+}
+.card h2 {
+  font-size: 13px; font-weight: 600; margin: 0 0 2px;
+  text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2);
+}
+.card .desc { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+
+.meter { height: 26px; border-radius: 6px; background: var(--track); position: relative; }
+.meter .fill { height: 100%; background: var(--measured); border-radius: 6px 4px 4px 6px; min-width: 3px; transition: width .2s; }
+/* The fill is a 3px sliver at this ratio, so its value label rides outside
+   it rather than inside where it would not fit. */
+.meter .lab {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  font-size: 12px; color: var(--ink); white-space: nowrap;
+  font-variant-numeric: tabular-nums; transition: left .2s;
+}
+.meterrow { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+
+/* ---- charts ---- */
+.chartbox { position: relative; }
+/* The CSS height must be stated. Without it the canvas takes its layout
+   height from the height attribute, and the device-pixel-ratio rescale writes
+   that attribute back - so every frame multiplies the canvas by the DPR again
+   and the chart grows without bound. */
+canvas { display: block; width: 100%; height: 230px; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin-bottom: 10px; }
+.legend i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+.legend .cap-line { height: 0; border-top: 1px solid var(--muted); }
+
+.tip {
+  position: absolute; pointer-events: none; opacity: 0;
+  background: var(--plane); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 10px; font-size: 12px; white-space: nowrap;
+  font-variant-numeric: tabular-nums; transition: opacity .1s;
+  box-shadow: 0 4px 14px rgba(0,0,0,.35); z-index: 5;
+}
+
+/* ---- split ---- */
+.split { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; margin-top: 12px; }
+@media (max-width: 780px) { .split { grid-template-columns: 1fr; } .hero .fig { font-size: 42px; } }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 5px 0; border-bottom: 1px solid var(--grid); }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: 0; }
+
+.bar { height: 6px; border-radius: 3px; background: var(--measured); min-width: 2px; }
+.badge { font-size: 12px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); }
+.badge.ok  { color: var(--good); }
+.badge.bad { color: var(--critical); }
+
+footer.foot { color: var(--muted); font-size: 12px; margin-top: 18px; display: flex; gap: 16px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+
+<div class="banner">
+  <div class="inner">
+    <span class="mark">&#9888;</span>
+    <span>Bu ölçüm RP2350 üzerinde alınmıştır. Hedef donanım Zynq UltraScale+ R5F, kod TCM'de koşacak — <b>bu sayılar doğrudan taşınamaz.</b> Doğrulanan şey protokol motorunun yapısı ve tampon davranışıdır.</span>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <header class="top">
+    <h1>R5F FreeRTOS Protokol Simülatörü</h1>
+    <span class="sub">Raspberry Pi Pico 2W · RP2350 Cortex-M33 · UART0 loopback</span>
+    <span class="spacer"></span>
+    <span class="chip"><span class="dot" id="dot"></span><span id="conn">bağlanıyor…</span></span>
+    <button class="ghost" id="theme">açık tema</button>
+  </header>
+
+  <section class="hero">
+    <div>
+      <div class="fig" id="heroVal">—</div>
+      <div class="cap" style="margin-top:6px">en kötü durumda marj</div>
+    </div>
+    <div class="cap">
+      UART RX kesmesinin bir bayt penceresine göre <strong>kullanmadığı</strong> pay.
+      Bütçe <strong id="budgetUs">86,8</strong> µs; kesme en kötü durumda
+      <strong id="heroWorst">—</strong> sürüyor. Kesme NVIC önceliği <strong>0</strong>'da,
+      FreeRTOS'un <strong>16</strong> olan çekirdek tavanının üstünde — çekirdek onu maskeleyemez.
+    </div>
+  </section>
+
+  <section class="tiles">
+    <div class="tile"><div class="lab">RX kesmesi · en kötü</div><div class="val" id="isrMax">—</div><div class="note" id="isrMaxCyc">—</div></div>
+    <div class="tile"><div class="lab">RX kesmesi · tipik</div><div class="val" id="isrMean">—</div><div class="note" id="isrMeanCyc">—</div></div>
+    <div class="tile"><div class="lab">Seğirme (en kötü − en iyi)</div><div class="val" id="jitter">—</div><div class="note">tek çevrim = ideal</div></div>
+    <div class="tile"><div class="lab">Köprü tamponu · tepe</div><div class="val" id="brPeak">—</div><div class="note" id="brNote">—</div></div>
+    <div class="tile"><div class="lab">RX halkası · tepe</div><div class="val" id="rxPeak">—</div><div class="note" id="rxNote">—</div></div>
+    <div class="tile"><div class="lab">Sensör çerçevesi</div><div class="val" id="frameHz">—</div><div class="note" id="frameNote">—</div></div>
+  </section>
+
+  <section class="card">
+    <h2>Kesme süresi / bayt bütçesi</h2>
+    <div class="desc">Çubuğun tamamı bir bayt penceresi (86,8 µs). Dolu kısım kesmenin en kötü durumda harcadığı süre.</div>
+    <div class="meter"><div class="fill" id="meterFill" style="width:0"></div><span class="lab" id="meterLab"></span></div>
+    <div class="meterrow"><span>0</span><span id="meterMid">43,4 µs</span><span id="meterMax">86,8 µs</span></div>
+  </section>
+
+  <section class="card">
+    <h2>Köprü tamponu doluluğu — canlı</h2>
+    <div class="desc">Her nokta 100 ms'lik pencerede görülen en yüksek doluluk. Dikey işaretler CAN patlamasının başladığı anlar.</div>
+    <div class="legend">
+      <span><i style="background:var(--measured)"></i>ölçülen doluluk</span>
+      <span><i style="background:var(--predicted)"></i>beklenen tepe (<span id="lgPeak">796</span> B)</span>
+      <span><i class="cap-line"></i>halka kapasitesi (<span id="lgRing">4096</span> B)</span>
+    </div>
+    <div class="chartbox"><canvas id="cLive" height="220"></canvas><div class="tip" id="tLive"></div></div>
+  </section>
+
+  <section class="card">
+    <h2>CAN patlaması profili — son patlama</h2>
+    <div class="desc" id="burstDesc">Firmware her patlamada 128 örneklik yüksek hızlı iz yakalar; 10 Hz telemetri bu olayın içine tek örnek düşürebilirdi.</div>
+    <div class="legend">
+      <span><i style="background:var(--measured)"></i>ölçülen doluluk</span>
+      <span><i style="background:var(--predicted)"></i>beklenen tepe</span>
+      <span><i class="cap-line"></i>halka kapasitesi</span>
+    </div>
+    <div class="chartbox"><canvas id="cBurst" height="220"></canvas><div class="tip" id="tBurst"></div></div>
+  </section>
+
+  <section class="split">
+    <div class="card">
+      <h2>Görev başına CPU</h2>
+      <div class="desc">FreeRTOS çalışma zamanı sayaçlarından, son pencere.</div>
+      <table id="cpuTable"><tbody></tbody></table>
+    </div>
+    <div class="card">
+      <h2>Hata sayaçları</h2>
+      <div class="desc">Hepsinin sıfır kalması gerekiyor. Sıfırdan farklı her satır kırmızı.</div>
+      <table id="errTable"><tbody></tbody></table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Donanım</h2>
+    <table id="hwTable"><tbody></tbody></table>
+  </section>
+
+  <footer class="foot">
+    <span id="fSrc">kaynak: —</span>
+    <span id="fCount">örnek: —</span>
+    <span id="fUp">—</span>
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- state
+const MAX_POINTS = 600;          // 60 s at 10 Hz
+const hist = [];                 // recent samples
+let latest = null;
+let burst = null;                // {us, d:[...]}
+let limits = { ring: 4096, expect_peak: 796 };
+let dirty = true;
+
+const $ = (id) => document.getElementById(id);
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function fmtUs(v)  { return v.toLocaleString("tr-TR", {minimumFractionDigits:3, maximumFractionDigits:3}) + " µs"; }
+function fmtPct(v) { return v.toLocaleString("tr-TR", {minimumFractionDigits:2, maximumFractionDigits:2}) + " %"; }
+function num(v)    { return (v ?? 0).toLocaleString("tr-TR"); }
+
+// ---------------------------------------------------------------- theme
+const savedTheme = localStorage.getItem("r5f-theme");
+if (savedTheme) document.documentElement.setAttribute("data-theme", savedTheme);
+$("theme").onclick = () => {
+  const light = document.documentElement.getAttribute("data-theme") === "light";
+  document.documentElement.setAttribute("data-theme", light ? "dark" : "light");
+  localStorage.setItem("r5f-theme", light ? "dark" : "light");
+  syncThemeLabel(); dirty = true;
+};
+function syncThemeLabel() {
+  const light = document.documentElement.getAttribute("data-theme") === "light";
+  $("theme").textContent = light ? "koyu tema" : "açık tema";
+}
+syncThemeLabel();
+
+// ---------------------------------------------------------------- stream
+let es = null;
+function connect() {
+  es = new EventSource("/events");
+  es.addEventListener("hello",   (e) => setStatus(JSON.parse(e.data)));
+  es.addEventListener("status",  (e) => setStatus(JSON.parse(e.data)));
+  es.addEventListener("history", (e) => {
+    for (const s of JSON.parse(e.data)) push(s);
+    dirty = true;
+  });
+  es.addEventListener("sample",  (e) => { push(JSON.parse(e.data)); dirty = true; });
+  es.onerror = () => { $("dot").className = "dot dead"; $("conn").textContent = "bağlantı koptu, yeniden deneniyor"; };
+}
+function setStatus(s) {
+  const demo = latest && latest.demo;
+  $("dot").className = "dot " + (demo ? "demo" : (s.connected ? "live" : "dead"));
+  $("conn").textContent = demo ? "DEMO — kart bağlı değil"
+                        : (s.connected ? ("canlı · " + (s.source || "")) : "veri yok");
+  if (s.source) $("fSrc").textContent = "kaynak: " + s.source;
+}
+function push(s) {
+  latest = s;
+  if (s.limits) limits = s.limits;
+  if (s.trace && s.trace.d && s.trace.d.length) burst = s.trace;
+  hist.push(s);
+  if (hist.length > MAX_POINTS) hist.splice(0, hist.length - MAX_POINTS);
+}
+
+// ---------------------------------------------------------------- canvas
+function prep(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight || 220;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+const PAD = { l: 52, r: 14, t: 12, b: 26 };
+
+function axes(ctx, w, h, yMax, xLabels) {
+  const gy = (v) => PAD.t + (h - PAD.t - PAD.b) * (1 - v / yMax);
+  ctx.lineWidth = 1;
+
+  // horizontal gridlines: hairline, solid, recessive
+  ctx.strokeStyle = css("--grid");
+  ctx.fillStyle = css("--muted");
+  ctx.font = '11px system-ui, -apple-system, "Segoe UI", sans-serif';
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  const steps = 4;
+  for (let i = 0; i <= steps; i++) {
+    const v = (yMax / steps) * i, y = Math.round(gy(v)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(w - PAD.r, y); ctx.stroke();
+    ctx.fillText(Math.round(v).toLocaleString("tr-TR"), PAD.l - 8, y);
+  }
+  // baseline
+  ctx.strokeStyle = css("--axis");
+  const yb = Math.round(gy(0)) + 0.5;
+  ctx.beginPath(); ctx.moveTo(PAD.l, yb); ctx.lineTo(w - PAD.r, yb); ctx.stroke();
+
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  ctx.fillStyle = css("--muted");
+  for (const [frac, text] of xLabels) {
+    ctx.fillText(text, PAD.l + (w - PAD.l - PAD.r) * frac, h - PAD.b + 7);
+  }
+  return gy;
+}
+
+function refLine(ctx, w, y, color, label, dashed) {
+  ctx.save();
+  ctx.strokeStyle = color; ctx.lineWidth = 1;
+  if (dashed) ctx.setLineDash([4, 4]);
+  const yy = Math.round(y) + 0.5;
+  ctx.beginPath(); ctx.moveTo(PAD.l, yy); ctx.lineTo(w - PAD.r, yy); ctx.stroke();
+  ctx.restore();
+  if (label) {
+    ctx.save();
+    ctx.fillStyle = css("--muted");
+    ctx.font = '11px system-ui, -apple-system, "Segoe UI", sans-serif';
+    ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+    ctx.fillText(label, PAD.l + 6, y - 3);
+    ctx.restore();
+  }
+}
+
+function series(ctx, pts, color) {
+  if (pts.length < 2) {
+    if (pts.length === 1) {
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(pts[0][0], pts[0][1], 4, 0, 7); ctx.fill();
+    }
+    return;
+  }
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.stroke();
+}
+
+// ------------------------------------------------------- live buffer chart
+let liveGeom = null;
+
+function drawLive() {
+  const c = $("cLive");
+  const { ctx, w, h } = prep(c);
+  const yMax = limits.ring || 4096;
+  const gy = axes(ctx, w, h, yMax, [[0, "−60 s"], [0.5, "−30 s"], [1, "şimdi"]]);
+  const plotW = w - PAD.l - PAD.r;
+
+  refLine(ctx, w, gy(yMax), css("--muted"), null, false);
+  refLine(ctx, w, gy(limits.expect_peak), css("--predicted"),
+          "beklenen tepe " + num(limits.expect_peak) + " B", true);
+
+  const n = Math.max(hist.length, 2);
+  const gx = (i) => PAD.l + plotW * (i / (MAX_POINTS - 1));
+  const pts = hist.map((s, i) => [gx(i + (MAX_POINTS - hist.length)),
+                                  gy(Math.min(s.bridge ? s.bridge.peak : 0, yMax))]);
+
+  // burst starts: the window where occupancy first became non-zero
+  ctx.save();
+  ctx.strokeStyle = css("--predicted"); ctx.globalAlpha = 0.35; ctx.lineWidth = 1;
+  for (let i = 1; i < hist.length; i++) {
+    const a = hist[i - 1].bridge ? hist[i - 1].bridge.peak : 0;
+    const b = hist[i].bridge ? hist[i].bridge.peak : 0;
+    if (a === 0 && b > 0) {
+      const x = Math.round(gx(i + (MAX_POINTS - hist.length))) + 0.5;
+      ctx.beginPath(); ctx.moveTo(x, PAD.t); ctx.lineTo(x, h - PAD.b); ctx.stroke();
+    }
+  }
+  ctx.restore();
+
+  series(ctx, pts, css("--measured"));
+
+  // end marker with a surface ring so it stays legible over the line
+  if (pts.length) {
+    const p = pts[pts.length - 1];
+    ctx.fillStyle = css("--surface-1");
+    ctx.beginPath(); ctx.arc(p[0], p[1], 6, 0, 7); ctx.fill();
+    ctx.fillStyle = css("--measured");
+    ctx.beginPath(); ctx.arc(p[0], p[1], 4, 0, 7); ctx.fill();
+  }
+
+  liveGeom = { gx, gy, w, h, offset: MAX_POINTS - hist.length };
+}
+
+// ------------------------------------------------------ burst profile chart
+let burstGeom = null;
+
+function drawBurst() {
+  const c = $("cBurst");
+  const { ctx, w, h } = prep(c);
+  const yMax = limits.ring || 4096;
+  const d = burst ? burst.d : [];
+  const us = burst ? burst.us : 1041;
+  const spanMs = (d.length * us) / 1000;
+
+  const gy = axes(ctx, w, h, yMax, spanMs
+    ? [[0, "0 ms"], [0.5, (spanMs / 2).toFixed(0) + " ms"], [1, spanMs.toFixed(0) + " ms"]]
+    : [[0, "0 ms"], [1, "—"]]);
+  const plotW = w - PAD.l - PAD.r;
+
+  refLine(ctx, w, gy(yMax), css("--muted"), null, false);
+  refLine(ctx, w, gy(limits.expect_peak), css("--predicted"),
+          "beklenen tepe " + num(limits.expect_peak) + " B", true);
+
+  if (!d.length) {
+    ctx.fillStyle = css("--muted");
+    ctx.font = '13px system-ui, -apple-system, "Segoe UI", sans-serif';
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("henüz patlama yakalanmadı", PAD.l + plotW / 2, (PAD.t + h - PAD.b) / 2);
+    burstGeom = null;
+    return;
+  }
+
+  const gx = (i) => PAD.l + plotW * (i / (d.length - 1));
+  const pts = d.map((v, i) => [gx(i), gy(Math.min(v, yMax))]);
+
+  // shade the 19.845 ms ingress window
+  const burstMs = limits.burst_ms_x10 ? limits.burst_ms_x10 / 10 : 19.8;
+  const endFrac = Math.min(1, (burstMs * 1000) / (d.length * us));
+  ctx.save();
+  ctx.fillStyle = css("--predicted"); ctx.globalAlpha = 0.10;
+  ctx.fillRect(PAD.l, PAD.t, plotW * endFrac, h - PAD.t - PAD.b);
+  ctx.restore();
+
+  series(ctx, pts, css("--measured"));
+
+  // label the measured peak, the one number this chart exists for
+  let pi = 0;
+  for (let i = 1; i < d.length; i++) if (d[i] > d[pi]) pi = i;
+  const px = gx(pi), py = gy(Math.min(d[pi], yMax));
+  ctx.fillStyle = css("--surface-1");
+  ctx.beginPath(); ctx.arc(px, py, 6, 0, 7); ctx.fill();
+  ctx.fillStyle = css("--measured");
+  ctx.beginPath(); ctx.arc(px, py, 4, 0, 7); ctx.fill();
+  ctx.fillStyle = css("--ink");
+  ctx.font = '600 12px system-ui, -apple-system, "Segoe UI", sans-serif';
+  ctx.textAlign = px > PAD.l + plotW * 0.7 ? "right" : "left";
+  ctx.textBaseline = "bottom";
+  ctx.fillText(num(d[pi]) + " B", px + (ctx.textAlign === "right" ? -10 : 10), py - 6);
+
+  burstGeom = { gx, gy, d, us, w, h };
+}
+
+// ---------------------------------------------------------------- tooltips
+function hookTip(canvasId, tipId, resolve) {
+  const c = $(canvasId), tip = $(tipId);
+  c.addEventListener("mousemove", (ev) => {
+    const r = c.getBoundingClientRect();
+    const info = resolve(ev.clientX - r.left);
+    if (!info) { tip.style.opacity = 0; return; }
+    tip.innerHTML = info.html;
+    tip.style.opacity = 1;
+    const tw = tip.offsetWidth;
+    tip.style.left = Math.max(0, Math.min(c.clientWidth - tw, info.x - tw / 2)) + "px";
+    tip.style.top = Math.max(0, info.y - tip.offsetHeight - 12) + "px";
+  });
+  c.addEventListener("mouseleave", () => { tip.style.opacity = 0; });
+}
+
+hookTip("cLive", "tLive", (mx) => {
+  if (!liveGeom || !hist.length) return null;
+  let best = 0, bd = 1e9;
+  for (let i = 0; i < hist.length; i++) {
+    const d = Math.abs(liveGeom.gx(i + liveGeom.offset) - mx);
+    if (d < bd) { bd = d; best = i; }
+  }
+  if (bd > 30) return null;
+  const s = hist[best];
+  const ago = ((hist.length - 1 - best) / 10).toFixed(1);
+  return {
+    x: liveGeom.gx(best + liveGeom.offset),
+    y: liveGeom.gy(Math.min(s.bridge.peak, limits.ring)),
+    html: `<b>${num(s.bridge.peak)} B</b> tepe · ${num(s.bridge.cur)} B anlık<br>`
+        + `RX halkası ${num(s.rx.peak)} B · ${ago} s önce`
+  };
+});
+
+hookTip("cBurst", "tBurst", (mx) => {
+  if (!burstGeom) return null;
+  const { gx, gy, d, us } = burstGeom;
+  let best = 0, bd = 1e9;
+  for (let i = 0; i < d.length; i++) {
+    const dist = Math.abs(gx(i) - mx);
+    if (dist < bd) { bd = dist; best = i; }
+  }
+  if (bd > 20) return null;
+  return {
+    x: gx(best), y: gy(Math.min(d[best], limits.ring)),
+    html: `<b>${num(d[best])} B</b> · ${((best * us) / 1000).toFixed(1)} ms`
+  };
+});
+
+// ---------------------------------------------------------------- rendering
+function render() {
+  if (dirty && latest) {
+    dirty = false;
+    paint();
+  }
+  requestAnimationFrame(render);
+}
+
+function paint() {
+  const s = latest;
+  const clk = s.hw.clk || 150000000;
+  const budget = s.hw.budget_cycles || 13020;
+  const toUs = (cyc) => (cyc / clk) * 1e6;
+
+  const worst = s.isr.max || 0;
+  const typical = s.isr.mean || 0;
+  const jitter = Math.max(0, (s.isr.max || 0) - (s.isr.min || 0));
+  const marginPct = 100 * (1 - worst / budget);
+
+  $("heroVal").textContent = worst ? fmtPct(marginPct) : "—";
+  $("heroWorst").textContent = fmtUs(toUs(worst));
+  $("budgetUs").textContent = (s.hw.byte_time_ns / 1000).toLocaleString("tr-TR", {minimumFractionDigits:1, maximumFractionDigits:1});
+
+  $("isrMax").textContent = fmtUs(toUs(worst));
+  $("isrMaxCyc").textContent = num(worst) + " çevrim · bütçenin %" +
+      (100 * worst / budget).toLocaleString("tr-TR", {maximumFractionDigits:2});
+  $("isrMean").textContent = fmtUs(toUs(typical));
+  $("isrMeanCyc").textContent = num(typical) + " çevrim";
+  $("jitter").textContent = num(jitter) + " çevrim";
+
+  $("brPeak").textContent = num(s.bridge.peak) + " B";
+  $("brNote").textContent = "beklenen " + num(limits.expect_peak) + " B · halka " + num(limits.ring) + " B";
+  $("rxPeak").textContent = num(s.rx.peak) + " B";
+  $("rxNote").textContent = "halkanın %" + (100 * s.rx.peak / (limits.ring || 4096)).toLocaleString("tr-TR", {maximumFractionDigits:1}) + "'i";
+
+  // frame rate over the window we actually have
+  if (hist.length > 5) {
+    const a = hist[0], b = hist[hist.length - 1];
+    const dt = (b.t - a.t) / 1000;
+    if (dt > 0.5) {
+      const hz = (b.frames.ok - a.frames.ok) / dt;
+      $("frameHz").textContent = hz.toLocaleString("tr-TR", {maximumFractionDigits:1}) + " Hz";
+      $("frameNote").textContent = "boşta " + num(limits.sensor_hz || 180) +
+        " Hz · patlamada " + num(limits.sensor_hz_burst || 164) + " Hz";
+    }
+  }
+
+  const frac = Math.min(1, worst / budget);
+  $("meterFill").style.width = (frac * 100).toFixed(3) + "%";
+  $("meterFill").style.background =
+      frac > 0.8 ? css("--critical") : frac > 0.5 ? css("--warning") : css("--measured");
+  const lab = $("meterLab");
+  lab.textContent = fmtUs(toUs(worst)) + " / " + (s.hw.byte_time_ns/1000).toLocaleString("tr-TR",{minimumFractionDigits:1,maximumFractionDigits:1}) + " µs";
+  lab.style.left = "calc(" + Math.max(frac * 100, 0.3).toFixed(3) + "% + 10px)";
+  $("meterMid").textContent = (s.hw.byte_time_ns / 2000).toLocaleString("tr-TR", {minimumFractionDigits:1, maximumFractionDigits:1}) + " µs";
+  $("meterMax").textContent = (s.hw.byte_time_ns / 1000).toLocaleString("tr-TR", {minimumFractionDigits:1, maximumFractionDigits:1}) + " µs";
+
+  $("lgPeak").textContent = num(limits.expect_peak);
+  $("lgRing").textContent = num(limits.ring);
+
+  // CPU table, biggest first
+  const cpu = (s.cpu || []).slice().sort((a, b) => b.p - a.p);
+  $("cpuTable").tBodies[0].innerHTML = cpu.map((t) => {
+    const pct = (t.p / 10).toLocaleString("tr-TR", {minimumFractionDigits:1, maximumFractionDigits:1});
+    return `<tr><td>${t.n}</td>`
+         + `<td style="width:50%"><div class="bar" style="width:${Math.max(2, t.p / 10)}%"></div></td>`
+         + `<td class="num">${pct} %</td></tr>`;
+  }).join("");
+
+  const errs = [
+    ["CRC hatası", s.frames.crc],
+    ["çerçeve sayacı boşluğu", s.frames.gaps],
+    ["yeniden senkron", s.frames.resync],
+    ["RX halka taşması", s.rx.ovf],
+    ["köprü halka taşması", s.bridge.ovf],
+    ["TX tıkanması", s.wire.stall],
+    ["UART overrun (bayt)", s.wire.ovr],
+    ["UART overrun (durum yazmacı)", s.wire.ovr_hw],
+  ];
+  $("errTable").tBodies[0].innerHTML = errs.map(([k, v]) =>
+    `<tr><td>${k}</td><td class="num">${num(v)}</td>`
+   + `<td class="num"><span class="badge ${v ? "bad" : "ok"}">${v ? "hata" : "temiz"}</span></td></tr>`
+  ).join("");
+
+  const hw = [
+    ["çekirdek saati", (clk / 1e6).toLocaleString("tr-TR", {maximumFractionDigits:1}) + " MHz"],
+    ["gerçekleşen baud", num(s.hw.baud) + " (nominal 115.200)"],
+    ["loopback", s.hw.loopback === "internal" ? "PL011 dahili (UARTCR.LBE)" : "harici jumper GP0↔GP1"],
+    ["çevrim sayacı", s.hw.cyccnt ? "çalışıyor" : "ÖLÜ — zamanlamalar geçersiz"],
+    ["bayt bütçesi", num(budget) + " çevrim = " + (s.hw.byte_time_ns / 1000).toLocaleString("tr-TR", {minimumFractionDigits:1, maximumFractionDigits:1}) + " µs"],
+    ["hatta geçen bayt", num(s.wire.rx)],
+    ["ölçülen kesme sayısı", num(s.isr.n)],
+  ];
+  $("hwTable").tBodies[0].innerHTML = hw.map(([k, v]) =>
+    `<tr><td>${k}</td><td class="num">${v}</td></tr>`).join("");
+
+  $("fCount").textContent = "örnek: " + num(hist.length) + " (" + (hist.length / 10).toFixed(0) + " s)";
+  $("fUp").textContent = "kart açık: " + (s.t / 1000).toFixed(0) + " s";
+
+  drawLive();
+  drawBurst();
+}
+
+window.addEventListener("resize", () => { dirty = true; });
+connect();
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
