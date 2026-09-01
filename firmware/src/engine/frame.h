@@ -14,12 +14,22 @@
  * interleaved and has to demultiplex them the way the far end of a real link
  * would.
  *
+ * The sensor frame layout is the one given in the specification: two header
+ * bytes, one counter byte, the payload, two checksum bytes.
+ *
  *   offset  size  sensor frame              bridge unit
- *   0       1     0xA5                      0xA5
- *   1       1     0x5A                      0xC3
- *   2       2     frame counter (LE)        unit index | burst sequence
- *   4       58    payload from the counter  payload from burst and unit
+ *   0       1     0xA5  header              0xA5  header
+ *   1       1     0x5A  header              0xC3  header
+ *   2       1     frame counter             unit index
+ *   3       1     payload                   burst sequence
+ *   3/4     59/58 payload from the counter  payload from burst and unit
  *   62      2     CRC-16/CCITT-FALSE, little endian, over bytes 0..61
+ *
+ * The counter is one byte, so it wraps every 256 frames - 1.42 seconds at
+ * 180 Hz. Gap detection is done in unsigned 8 bit arithmetic and stays correct
+ * across the wrap, but it cannot distinguish a loss of exactly 256 frames from
+ * no loss at all. Losing 256 consecutive frames would show up in every other
+ * counter on the dashboard first.
  *
  * Payload bytes are always <= 0x7F, so 0xA5 can never appear inside a payload
  * and no payload can forge a sync pair.
@@ -40,8 +50,8 @@
 /* CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, no reflection, no final xor. */
 uint16_t frame_crc16(const uint8_t *data, uint32_t len);
 
-void frame_build_sensor(uint8_t *out, uint16_t counter);
-void frame_build_bridge(uint8_t *out, uint8_t unit_index, uint16_t burst_seq);
+void frame_build_sensor(uint8_t *out, uint8_t counter);
+void frame_build_bridge(uint8_t *out, uint8_t unit_index, uint8_t burst_seq);
 
 /* Streaming demultiplexer and verifier. Feed it every received byte in order;
  * it resynchronises on a sync pair after an error. */
@@ -56,7 +66,7 @@ typedef struct {
     uint32_t crc_errors;
     uint32_t counter_gaps;
     bool     have_last;
-    uint16_t last_counter;
+    uint8_t  last_counter;
 
     /* bridge stream: a gap here is an ISO-TP reassembly failure */
     uint32_t units_ok;

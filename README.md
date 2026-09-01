@@ -78,7 +78,7 @@ captured bursts landed inside that band. The 4096-byte ring keeps 4.7× margin.
   ┌──────────────── Raspberry Pi Pico 2W (RP2350) ─────────────────┐
   │                                                                │
   │  sensor task ──► sensor ring ──┐                               │
-  │   64 B frames      256 B       │                               │
+  │   2+1+59+2 B       256 B       │                               │
   │   CRC-16                       ├──► byte tick IRQ ──► UART0 TX │
   │                                │    every 86.8 µs        │     │
   │  CAN sim IRQ ──► bridge ring ──┘    unit-atomic          │     │

@@ -252,7 +252,7 @@ void engine_protocol_task(void *arg)
 void engine_sensor_task(void *arg)
 {
     (void)arg;
-    uint16_t counter = 0;
+    uint8_t  counter = 0;
     uint8_t  frame[FRAME_LEN];
 
     /* Prime the ring before the line starts, so the first byte tick has

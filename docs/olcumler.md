@@ -32,6 +32,44 @@ donanım baytları toplar ve RX kesmesi öbek başına bir kez atardı. Biz bayt
 başına atmasını istiyoruz, çünkü hedefte 86,8 µs'ye sığması gereken şey tam da
 bayt başına koşan yol.
 
+## Sensör çerçevesi düzeni
+
+Şartnamede verilen düzen: **2 bayt başlık + 1 bayt sayaç + veri + 2 bayt
+sağlama**. Veri alanının boyutu serbest bir parametre değil — çerçeve boyu ile
+çerçeve hızının çarpımı hat hızına eşit olmak zorunda:
+
+```
+  64 B × 180 Hz = 11.520 B/s = 115.200 baud / 10     ✓ tam eşit
+```
+
+Bu da veri alanını **59 bayta** sabitler:
+
+| Ofset | Boyut | İçerik |
+|---|---|---|
+| 0–1 | 2 | başlık `A5 5A` |
+| 2 | 1 | çerçeve sayacı |
+| 3–61 | **59** | veri |
+| 62–63 | 2 | CRC-16/CCITT-FALSE |
+
+`config.h` bunu derleme zamanında denetliyor. Veri alanı 64 yapılırsa çerçeve
+69 bayta çıkar, 180 Hz'de 12.420 B/s gerekir ve hat 11.520 B/s taşır — **üç
+ayrı iddia birden düşer** ve derleme kırılır:
+
+```
+error: static assertion failed: "frame size times frame rate is not the
+line rate: with this payload the sensor stream either starves the line or
+oversubscribes it, and the ring buffer analysis does not hold"
+error: static assertion failed: "sensor should yield exactly 16 of its 180
+frames per second"
+error: static assertion failed: "a burst must be a whole number of 64 byte
+wire units"
+```
+
+Sayaç 1 bayt olduğu için 256 çerçevede bir sarıyor — 180 Hz'de 1,42 saniye.
+Boşluk tespiti işaretsiz 8 bit aritmetiğiyle yapılıyor ve sarma boyunca doğru
+kalıyor; ayırt edemeyeceği tek durum **tam olarak 256 ardışık çerçevenin**
+kaybı, ki o çoktan diğer sayaçlara yansırdı.
+
 ## Ana tablo
 
 ### Son teslim tarihi

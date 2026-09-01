@@ -46,7 +46,7 @@ typedef struct {
     bool     active;
     uint32_t slot;            /* 0..146 inside a burst */
     uint32_t since_burst;     /* slots since the last burst started */
-    uint16_t burst_seq;
+    uint8_t  burst_seq;
 
     uint8_t  unit[FRAME_LEN]; /* the 64 byte unit currently being handed over */
     uint8_t  unit_index;

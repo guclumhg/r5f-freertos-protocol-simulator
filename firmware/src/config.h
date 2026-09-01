@@ -35,7 +35,22 @@
 
 /* ------------------------------------------------------------ sensor path */
 
-#define SENSOR_FRAME_BYTES      64u
+/* Frame layout as given: two header bytes, one counter byte, the payload,
+ * two checksum bytes.
+ *
+ * FRAME_PAYLOAD_BYTES is the only free parameter, and it is not free for
+ * long: the frame total times the frame rate has to equal the line rate, and
+ * the assertion at the bottom of this file enforces that. At 180 Hz on a
+ * 115200 baud line the total must be 64, which leaves 59 for the payload.
+ * A 64 byte payload would make the frame 69 bytes and 180 Hz would need
+ * 12420 B/s on a line that carries 11520 - the build will say so. */
+#define FRAME_HEADER_BYTES      2u
+#define FRAME_COUNTER_BYTES     1u
+#define FRAME_CRC_BYTES         2u
+#define FRAME_PAYLOAD_BYTES     59u
+
+#define SENSOR_FRAME_BYTES      (FRAME_HEADER_BYTES + FRAME_COUNTER_BYTES + \
+                                 FRAME_PAYLOAD_BYTES + FRAME_CRC_BYTES)
 #define SENSOR_FRAME_HZ         180u        /* fills the line exactly */
 #define SENSOR_BYTES_PER_SEC    (SENSOR_FRAME_BYTES * SENSOR_FRAME_HZ)
 
@@ -101,7 +116,13 @@ _Static_assert(CAN_SLOT_NS * CYCLES_PER_US / 1000u == CAN_SLOT_CYCLES,
 _Static_assert(BYTE_TIME_CYCLES < 65536u && CAN_SLOT_CYCLES < 65536u,
                "both periods must fit a 16-bit PWM wrap");
 _Static_assert(SENSOR_BYTES_PER_SEC == UART_BAUD / 10u,
-               "the sensor stream is supposed to fill the line exactly");
+               "frame size times frame rate is not the line rate: with this "
+               "payload the sensor stream either starves the line or "
+               "oversubscribes it, and the ring buffer analysis does not hold");
+_Static_assert(SENSOR_FRAME_BYTES ==
+               FRAME_HEADER_BYTES + FRAME_COUNTER_BYTES +
+               FRAME_PAYLOAD_BYTES + FRAME_CRC_BYTES,
+               "frame layout does not add up to the frame size");
 _Static_assert(ISOTP_DATA_FRAMES + ISOTP_PROTO_FRAMES == ISOTP_FRAMES_TOTAL,
                "ISO-TP frame accounting does not add up");
 _Static_assert(ISOTP_DATA_FRAMES * CAN_FRAME_PAYLOAD == CAN_BURST_BYTES,

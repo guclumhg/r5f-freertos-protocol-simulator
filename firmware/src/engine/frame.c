@@ -25,21 +25,24 @@ static void seal(uint8_t *out)
     out[FRAME_LEN - 1u] = (uint8_t)(crc >> 8);
 }
 
-void frame_build_sensor(uint8_t *out, uint16_t counter)
+void frame_build_sensor(uint8_t *out, uint8_t counter)
 {
     out[0] = FRAME_SYNC0;
     out[1] = FRAME_KIND_SENSOR;
-    out[2] = (uint8_t)(counter & 0xFFu);
-    out[3] = (uint8_t)(counter >> 8);
+    out[2] = counter;
 
     /* Masked to 7 bits so 0xA5 can never appear in the payload. */
-    for (uint32_t i = 0; i < FRAME_LEN - 6u; i++) {
-        out[4 + i] = (uint8_t)((counter + i) & 0x7Fu);
+    for (uint32_t i = 0; i < FRAME_PAYLOAD_BYTES; i++) {
+        out[FRAME_HEADER_BYTES + FRAME_COUNTER_BYTES + i] =
+            (uint8_t)((counter + i) & 0x7Fu);
     }
     seal(out);
 }
 
-void frame_build_bridge(uint8_t *out, uint8_t unit_index, uint16_t burst_seq)
+/* The bridge unit is this project's own framing, not the given one. It only
+ * has to be the same length as a sensor frame - so the transmit arbiter can
+ * hand the line over in equal units - and to be told apart by byte 1. */
+void frame_build_bridge(uint8_t *out, uint8_t unit_index, uint8_t burst_seq)
 {
     out[0] = FRAME_SYNC0;
     out[1] = FRAME_KIND_BRIDGE;
@@ -60,14 +63,13 @@ void frame_rx_init(frame_rx_t *fr)
 
 static void check_sensor(frame_rx_t *fr)
 {
-    uint16_t counter = (uint16_t)fr->buf[2] |
-                       (uint16_t)((uint16_t)fr->buf[3] << 8);
+    uint8_t counter = fr->buf[2];
 
     if (fr->have_last) {
-        uint16_t expected = (uint16_t)(fr->last_counter + 1u);
+        uint8_t expected = (uint8_t)(fr->last_counter + 1u);
         if (counter != expected) {
-            /* Unsigned wrap gives the right gap even across 0xFFFF. */
-            fr->counter_gaps += (uint16_t)(counter - expected);
+            /* Unsigned wrap gives the right gap even across 0xFF. */
+            fr->counter_gaps += (uint8_t)(counter - expected);
         }
     }
     fr->have_last    = true;
