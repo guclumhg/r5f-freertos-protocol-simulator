@@ -94,7 +94,7 @@ header.top .spacer { flex: 1 1 auto; }
 .dot.dead { background: var(--critical); }
 .dot.demo { background: var(--warning); }
 
-button.ghost {
+a.ghost, button.ghost {
   background: var(--surface-1); color: var(--ink-2);
   border: 1px solid var(--border); border-radius: 8px;
   padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer;
@@ -200,6 +200,8 @@ footer.foot { color: var(--muted); font-size: 12px; margin-top: 18px; display: f
     <span class="sub">Raspberry Pi Pico 2W · RP2350 Cortex-M33 · UART0 loopback</span>
     <span class="spacer"></span>
     <span class="chip"><span class="dot" id="dot"></span><span id="conn">bağlanıyor…</span></span>
+    <a class="ghost" href="/sweep" style="text-decoration:none">baud taraması →</a>
+    <button class="ghost" id="reset" title="USB portunun gücünü keser ve verir">kartı yeniden başlat</button>
     <button class="ghost" id="theme">açık tema</button>
   </header>
 
@@ -301,6 +303,23 @@ function num(v)    { return (v ?? 0).toLocaleString("tr-TR"); }
 // ---------------------------------------------------------------- theme
 const savedTheme = localStorage.getItem("r5f-theme");
 if (savedTheme) document.documentElement.setAttribute("data-theme", savedTheme);
+/* If the board stops answering - which the sweep can cause deliberately -
+ * nothing short of cutting its USB power gets it back. This button is the
+ * only recovery available to whoever is standing in front of the projector. */
+$("reset").onclick = async () => {
+  if (!confirm("USB portunun gücü kesilip verilecek. Kart yeniden başlayacak. Devam?")) return;
+  const b = $("reset"); const old = b.textContent;
+  b.disabled = true; b.textContent = "güç kesiliyor…";
+  try {
+    const r = await fetch("/api/reset", {method:"POST"});
+    const d = await r.json();
+    b.textContent = d.ok ? "kart geri geldi" : "başarısız";
+  } catch (e) {
+    b.textContent = "istek gitmedi";
+  }
+  setTimeout(() => { b.disabled = false; b.textContent = old; }, 4000);
+};
+
 $("theme").onclick = () => {
   const light = document.documentElement.getAttribute("data-theme") === "light";
   document.documentElement.setAttribute("data-theme", light ? "dark" : "light");

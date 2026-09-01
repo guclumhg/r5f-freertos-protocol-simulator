@@ -28,6 +28,11 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DASHBOARD = os.path.join(ROOT, "dashboard", "index.html")
+SWEEP_PAGE = os.path.join(ROOT, "dashboard", "sweep.html")
+POWER_CYCLE = os.path.join(ROOT, "scripts", "power-cycle.sh")
+
+# One character each, read by the firmware's telemetry task.
+COMMANDS = {"uart": b"U", "handler": b"H", "both": b"B", "abort": b"X"}
 
 HISTORY = 600          # ~60 s at 10 Hz, sent to a browser when it connects
 PICO_VID = "2e8a"
@@ -42,9 +47,14 @@ class Hub:
         self._lock = threading.Lock()
         self._subs: set[queue.Queue] = set()
         self.history: list[dict] = []
+        # Sweep results are kept for the session, not just for the rolling
+        # history window. A sweep takes longer than the window is wide, so by
+        # the time it finished its first points had already scrolled out.
+        self.sweep_rows: list[dict] = []
         self.latest: dict | None = None
         self.connected = False
         self.source = "starting"
+        self.fd: int | None = None
         self.received = 0
         self.bad_lines = 0
 
@@ -65,6 +75,12 @@ class Hub:
             self.history.append(sample)
             if len(self.history) > HISTORY:
                 del self.history[: len(self.history) - HISTORY]
+            row = sample.get("row")
+            if row is not None:
+                self.sweep_rows = [r for r in self.sweep_rows
+                                   if r.get("i") != row.get("i")]
+                self.sweep_rows.append(row)
+                del self.sweep_rows[:-256]
             subs = list(self._subs)
         for q in subs:
             try:
@@ -82,10 +98,43 @@ class Hub:
                 "received": self.received,
                 "bad_lines": self.bad_lines,
                 "history": list(self.history),
+                "sweep_rows": list(self.sweep_rows),
             }
 
 
 HUB = Hub()
+
+
+def send_command(name: str) -> tuple[bool, str]:
+    """One byte to the board. Starts or stops a sweep."""
+    ch = COMMANDS.get(name)
+    if ch is None:
+        return False, f"unknown command: {name}"
+    fd = HUB.fd
+    if fd is None:
+        return False, "the board is not connected"
+    try:
+        os.write(fd, ch)
+    except OSError as exc:
+        return False, str(exc)
+    return True, f"sent {name}"
+
+
+def power_cycle() -> tuple[bool, str]:
+    """Cut power to the board's USB port and give it back.
+
+    The sweep can drive the board into a state where no task runs, and then
+    nothing short of this reaches it. Exposed over HTTP so that a wedged board
+    can be recovered from the dashboard, by whoever is standing in front of
+    the projector rather than by whoever wrote the firmware.
+    """
+    try:
+        r = subprocess.run(["bash", POWER_CYCLE], capture_output=True, text=True,
+                    timeout=90)
+        ok = r.returncode == 0
+        return ok, (r.stdout + r.stderr).strip()[-400:]
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
 
 
 # ---------------------------------------------------------------- serial input
@@ -112,7 +161,8 @@ def open_raw(path: str) -> int:
     CLOCAL is what stops the open blocking on carrier detect, and raw mode is
     what stops the line discipline eating or rewriting bytes.
     """
-    fd = os.open(path, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+    # Read-write, because the sweep is started by sending the board a byte.
+    fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     try:
         iflag, oflag, cflag, lflag, _, _, cc = termios.tcgetattr(fd)
         iflag = 0
@@ -157,6 +207,7 @@ def serial_reader(explicit: str | None, log_path: str | None) -> None:
 
         HUB.connected = True
         HUB.source = path
+        HUB.fd = fd
         print(f"[serial] reading {path}", flush=True)
         buf = b""
 
@@ -187,6 +238,7 @@ def serial_reader(explicit: str | None, log_path: str | None) -> None:
             HUB.connected = False
             HUB.source = "reconnecting"
         finally:
+            HUB.fd = None
             try:
                 os.close(fd)
             except OSError:
@@ -312,13 +364,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
 
         if path in ("/", "/index.html"):
-            try:
-                with open(DASHBOARD, "rb") as fh:
-                    body = fh.read()
-            except OSError:
-                body = b"<h1>dashboard/index.html is missing</h1>"
-            self._send(200, body, "text/html; charset=utf-8",
-                       [("Cache-Control", "no-store")])
+            self._page(DASHBOARD)
+            return
+
+        if path in ("/sweep", "/sweep.html"):
+            self._page(SWEEP_PAGE)
             return
 
         if path == "/api/state":
@@ -338,6 +388,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         self._send(404, b"not found\n", "text/plain")
 
+    def _page(self, filename):
+        try:
+            with open(filename, "rb") as fh:
+                body = fh.read()
+        except OSError:
+            body = b"<h1>" + os.path.basename(filename).encode() + b" is missing</h1>"
+        self._send(200, body, "text/html; charset=utf-8",
+                   [("Cache-Control", "no-store")])
+
+    def do_POST(self):                         # noqa: N802
+        path = self.path.split("?", 1)[0]
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(raw or b"{}")
+        except ValueError:
+            payload = {}
+
+        if path == "/api/sweep":
+            ok, msg = send_command(str(payload.get("cmd", "")))
+        elif path == "/api/reset":
+            ok, msg = power_cycle()
+        else:
+            self._send(404, b"not found\n", "text/plain")
+            return
+
+        body = json.dumps({"ok": ok, "message": msg}).encode()
+        self._send(200 if ok else 503, body, "application/json")
+
     def _sse(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -350,7 +429,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             snap = HUB.snapshot()
             self._event("hello", {k: v for k, v in snap.items()
-                                  if k != "history"})
+                                  if k not in ("history", "sweep_rows")})
+            if snap["sweep_rows"]:
+                self._event("rows", snap["sweep_rows"])
             if snap["history"]:
                 self._event("history", snap["history"])
 

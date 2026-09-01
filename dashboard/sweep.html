@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baud taraması — R5F Simülatörü</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  color-scheme: dark;
+  --surface-1:#1a1a19; --plane:#0d0d0d; --ink:#fff; --ink-2:#c3c2b7;
+  --muted:#898781; --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+}
+:root[data-theme="light"]{
+  color-scheme: light;
+  --surface-1:#fcfcfb; --plane:#f9f9f7; --ink:#0b0b0b; --ink-2:#52514e;
+  --muted:#898781; --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,.10);
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a;
+}
+*{box-sizing:border-box} html,body{margin:0;padding:0}
+body{background:var(--plane);color:var(--ink);
+     font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding-bottom:40px}
+.wrap{max-width:1180px;margin:0 auto;padding:0 16px}
+
+.banner{position:sticky;top:0;z-index:40;background:#4a2410;
+  border-bottom:2px solid var(--serious);color:#ffe9dd;padding:10px 16px;
+  font-size:13px;line-height:1.45}
+:root[data-theme="light"] .banner{background:#fdeee6;color:#5a2a10}
+.banner b{color:var(--serious)}
+.banner .inner{max-width:1180px;margin:0 auto;display:flex;gap:10px}
+
+header.top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;padding:22px 0 6px}
+header.top h1{font-size:19px;font-weight:600;margin:0;letter-spacing:-.01em}
+header.top .sub{color:var(--muted);font-size:13px}
+header.top .spacer{flex:1 1 auto}
+a.back{color:var(--ink-2);font-size:13px;text-decoration:none;
+  border:1px solid var(--border);border-radius:8px;padding:4px 10px;background:var(--surface-1)}
+a.back:hover{color:var(--ink)}
+
+.card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;
+  padding:16px 18px;margin-top:12px}
+.card h2{font-size:13px;font-weight:600;margin:0 0 2px;text-transform:uppercase;
+  letter-spacing:.05em;color:var(--ink-2)}
+.card .desc{color:var(--muted);font-size:12px;margin-bottom:12px}
+
+button{background:var(--surface-1);color:var(--ink);border:1px solid var(--border);
+  border-radius:8px;padding:7px 14px;font:inherit;font-size:13px;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--ink-2)}
+button:disabled{opacity:.4;cursor:default}
+button.go{background:var(--s1);border-color:var(--s1);color:#fff}
+button.danger{border-color:var(--critical);color:var(--critical)}
+button.danger:hover:not(:disabled){background:var(--critical);color:#fff}
+.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.controls .spacer{flex:1 1 auto}
+
+.prog{height:6px;border-radius:3px;background:var(--grid);margin-top:12px;overflow:hidden}
+.prog i{display:block;height:100%;background:var(--s1);width:0;transition:width .3s}
+.status{color:var(--ink-2);font-size:12px;margin-top:8px;font-variant-numeric:tabular-nums}
+.status.err{color:var(--critical)}
+.status.ok{color:var(--good)}
+
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--ink-2);margin-bottom:10px}
+.legend i{display:inline-block;width:14px;height:2px;vertical-align:middle;
+  margin-right:6px;border-radius:2px}
+.legend .cap-line{height:0;border-top:1px solid var(--muted)}
+.legend .x{color:var(--critical);font-weight:600}
+
+.chartbox{position:relative}
+canvas{display:block;width:100%;height:280px}
+.tip{position:absolute;pointer-events:none;opacity:0;background:var(--plane);color:var(--ink);
+  border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:12px;
+  white-space:nowrap;font-variant-numeric:tabular-nums;transition:opacity .1s;
+  box-shadow:0 4px 14px rgba(0,0,0,.35);z-index:5}
+.note{color:var(--muted);font-size:12px;margin-top:10px;border-left:2px solid var(--axis);
+  padding-left:10px}
+
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:right;padding:5px 6px;border-bottom:1px solid var(--grid);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--muted);font-weight:500;font-size:11.5px;text-transform:uppercase;
+  letter-spacing:.04em}
+tr.broke td{color:var(--critical)}
+tr.sel td{background:rgba(57,135,229,.10)}
+tbody tr{cursor:pointer}
+.scroll{overflow-x:auto}
+.empty{color:var(--muted);font-size:13px;padding:24px 0;text-align:center}
+</style>
+</head>
+<body>
+
+<div class="banner"><div class="inner">
+  <span>&#9888;</span>
+  <span>Bu ölçüm RP2350 üzerinde alınmıştır. Hedef donanım Zynq UltraScale+ R5F, kod TCM'de koşacak — <b>bu sayılar doğrudan taşınamaz.</b> Doğrulanan şey protokol motorunun yapısı ve tampon davranışıdır.</span>
+</div></div>
+
+<div class="wrap">
+  <header class="top">
+    <h1>Baud taraması</h1>
+    <span class="sub">bayt başına kesme mimarisi nerede tükeniyor</span>
+    <span class="spacer"></span>
+    <a class="back" href="/">← canlı ölçüme dön</a>
+    <button id="theme">açık tema</button>
+  </header>
+
+  <section class="card">
+    <h2>Tarama</h2>
+    <div class="desc">Tarama sırasında normal ölçüm durur; hat taramaya aittir.</div>
+    <div class="controls">
+      <button class="go" id="bUart">UART taraması</button>
+      <button class="go" id="bHand">İşleyici taraması</button>
+      <button class="go" id="bBoth">İkisi</button>
+      <button id="bStop">Durdur</button>
+      <span class="spacer"></span>
+      <button class="danger" id="bReset">Kartı yeniden başlat</button>
+    </div>
+    <div class="prog"><i id="prog"></i></div>
+    <div class="status" id="status">bağlanıyor…</div>
+    <div class="note">
+      <b>Kartı yeniden başlat</b> USB portunun gücünü kesip verir. Tarama kartı
+      bilerek hiçbir görevin koşamadığı noktaya kadar zorluyor; oraya varınca
+      kart hiçbir isteğe cevap vermez ve bu düğme geri getirmenin tek yoludur.
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>UART taraması — gerçek baud, üç alma modu</h2>
+    <div class="desc">Yatay eksen logaritmik. Kırmızı işaret, o modun ilk kırıldığı nokta.</div>
+    <div class="legend">
+      <span><i style="background:var(--s1)"></i>PER_BYTE — bayt başına kesme</span>
+      <span><i style="background:var(--s2)"></i>FIFO_TH — FIFO yarı dolu</span>
+      <span><i style="background:var(--s3)"></i>DMA_RX — blok başına kesme</span>
+      <span><i class="cap-line"></i>%70 sınırı</span>
+      <span class="x">✕ kırıldı</span>
+    </div>
+    <div class="chartbox"><canvas id="cUart"></canvas><div class="tip" id="tUart"></div></div>
+    <div class="note" id="capUart">
+      Bayt süresi baud ile ters orantılı, ISR süresi sabit. Oran bire yaklaşınca
+      mimari değişmek zorunda.
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>İşleyici taraması — UART'ın ötesi</h2>
+    <div class="desc">
+      Aynı iş bir zamanlayıcıdan tetikleniyor. Eksen bayt başına çekirdek çevrimi:
+      saatten bağımsız olduğu için hedefe taşınabilen tek büyüklük bu. Sağa doğru
+      gidildikçe bayt başına düşen zaman azalıyor.
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--s1)"></i>ölçülen yük (boşta kalma açığından)</span>
+      <span><i style="background:var(--s2)"></i>ISR sayacının gördüğü yük</span>
+      <span><i class="cap-line"></i>%70 sınırı</span>
+      <span class="x">✕ kırıldı</span>
+    </div>
+    <div class="chartbox"><canvas id="cSynth"></canvas><div class="tip" id="tSynth"></div></div>
+    <div class="note">
+      İki eğri arasındaki fark bir hata değil: çevrim sayacı işleyicinin
+      <b>içinde</b> başlıyor, istisna girişini ve çıkışını göremiyor.
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>ISR süresi dağılımı</h2>
+    <div class="desc" id="histDesc">Tablodan bir satır seçin.</div>
+    <div class="chartbox"><canvas id="cHist" style="height:200px"></canvas></div>
+    <div class="note">
+      Dağılımın genişliği önemli. Bu çekirdek komutları flash önbelleği üzerinden
+      getiriyor; kuyruğu üreten şey iş değil, bekleme.
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Bütün noktalar</h2>
+    <div class="desc">Satıra tıklayınca dağılımı yukarıda çizilir. Tablo kopyalanabilir.</div>
+    <div class="scroll"><table id="tbl">
+      <thead><tr>
+        <th>mod</th><th>baud</th><th>sapma</th><th>çevrim/bayt</th><th>kesme/s</th>
+        <th>ISR en az</th><th>ort</th><th>en çok</th><th>p99,9</th>
+        <th>yük ISR</th><th>yük gerçek</th><th>en kötü</th>
+        <th>kayıp</th><th>overrun</th><th>CRC</th><th>halka tepe</th><th>sonuç</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <div class="empty" id="empty">Henüz nokta yok. Yukarıdan bir tarama başlatın.</div>
+  </section>
+</div>
+
+<script>
+"use strict";
+const MODE = {0:"PER_BYTE",1:"FIFO_TH",2:"DMA_RX",254:"TABAN",255:"SENTETİK"};
+const COL  = {0:"--s1",1:"--s2",2:"--s3"};
+const LOAD_LIMIT = 0.70;
+
+const rows = [];          // every completed measurement point
+let selected = -1;
+let status = {run:0, point:0, total:0};
+let dirty = true;
+
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const num = v => (v ?? 0).toLocaleString("tr-TR");
+const pct = ppm => (ppm/10000).toLocaleString("tr-TR",{minimumFractionDigits:1,maximumFractionDigits:1});
+
+/* ---- theme ---- */
+const saved = localStorage.getItem("r5f-theme");
+if (saved) document.documentElement.setAttribute("data-theme", saved);
+$("theme").onclick = () => {
+  const light = document.documentElement.getAttribute("data-theme") === "light";
+  document.documentElement.setAttribute("data-theme", light ? "dark" : "light");
+  localStorage.setItem("r5f-theme", light ? "dark" : "light");
+  themeLabel(); dirty = true;
+};
+function themeLabel(){
+  $("theme").textContent =
+    document.documentElement.getAttribute("data-theme") === "light" ? "koyu tema" : "açık tema";
+}
+themeLabel();
+
+/* ---- commands ---- */
+async function post(url, body, label) {
+  const s = $("status");
+  s.className = "status"; s.textContent = label + "…";
+  try {
+    const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"},
+                               body: JSON.stringify(body || {})});
+    const d = await r.json();
+    s.className = "status " + (d.ok ? "ok" : "err");
+    s.textContent = d.message || (d.ok ? "tamam" : "başarısız");
+    return d.ok;
+  } catch (e) {
+    s.className = "status err"; s.textContent = "istek gönderilemedi: " + e;
+    return false;
+  }
+}
+$("bUart").onclick = () => post("/api/sweep", {cmd:"uart"},    "UART taraması başlatılıyor");
+$("bHand").onclick = () => post("/api/sweep", {cmd:"handler"}, "işleyici taraması başlatılıyor");
+$("bBoth").onclick = () => post("/api/sweep", {cmd:"both"},    "tam tarama başlatılıyor");
+$("bStop").onclick = () => post("/api/sweep", {cmd:"abort"},   "durduruluyor");
+$("bReset").onclick = () => {
+  if (!confirm("USB portunun gücü kesilip verilecek. Kart yeniden başlayacak. Devam?")) return;
+  post("/api/reset", {}, "kartın gücü kesiliyor");
+};
+
+/* ---- stream ---- */
+function take(sample) {
+  if (sample.sweep) status = {run:sample.sweep.run, point:sample.sweep.point,
+                              total:sample.sweep.total};
+  if (sample.row) {
+    const r = sample.row;
+    /* The histogram is emitted inside the row object, not beside it. */
+    if (!rows.some(x => x.i === r.i)) { rows.push(r); dirty = true; }
+    if (selected < 0) selected = r.i;
+  }
+}
+const es = new EventSource("/events");
+es.addEventListener("rows", e => {          // everything the session has seen
+  for (const r of JSON.parse(e.data)) {
+    if (!rows.some(x => x.i === r.i)) rows.push(r);
+    if (selected < 0) selected = r.i;
+  }
+  dirty = true;
+});
+es.addEventListener("history", e => { JSON.parse(e.data).forEach(take); dirty = true; });
+es.addEventListener("sample",  e => { take(JSON.parse(e.data)); dirty = true; });
+es.onerror = () => { const s=$("status"); s.className="status err"; s.textContent="akış koptu, yeniden bağlanıyor"; };
+
+/* ---- canvas plumbing ---- */
+const PAD = {l:58, r:56, t:14, b:30};
+function prep(c){
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w*dpr) || c.height !== Math.round(h*dpr)) {
+    c.width = Math.round(w*dpr); c.height = Math.round(h*dpr);
+  }
+  const ctx = c.getContext("2d");
+  ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,w,h);
+  return {ctx,w,h};
+}
+function grid(ctx,w,h,yMax,xTicks){
+  const gy = v => PAD.t + (h-PAD.t-PAD.b)*(1-v/yMax);
+  ctx.lineWidth=1; ctx.font='11px system-ui,-apple-system,"Segoe UI",sans-serif';
+  ctx.strokeStyle=css("--grid"); ctx.fillStyle=css("--muted");
+  ctx.textAlign="right"; ctx.textBaseline="middle";
+  for(let i=0;i<=5;i++){
+    const v=yMax/5*i, y=Math.round(gy(v))+0.5;
+    ctx.beginPath(); ctx.moveTo(PAD.l,y); ctx.lineTo(w-PAD.r,y); ctx.stroke();
+    ctx.fillText("%"+Math.round(v*100), PAD.l-8, y);
+  }
+  ctx.strokeStyle=css("--axis");
+  const yb=Math.round(gy(0))+0.5;
+  ctx.beginPath(); ctx.moveTo(PAD.l,yb); ctx.lineTo(w-PAD.r,yb); ctx.stroke();
+  ctx.textAlign="center"; ctx.textBaseline="top"; ctx.fillStyle=css("--muted");
+  for(const [frac,text] of xTicks)
+    ctx.fillText(text, PAD.l+(w-PAD.l-PAD.r)*frac, h-PAD.b+7);
+  return gy;
+}
+function limitLine(ctx,w,y){
+  ctx.save(); ctx.strokeStyle=css("--muted"); ctx.setLineDash([4,4]); ctx.lineWidth=1;
+  const yy=Math.round(y)+0.5;
+  ctx.beginPath(); ctx.moveTo(PAD.l,yy); ctx.lineTo(w-PAD.r,yy); ctx.stroke(); ctx.restore();
+  ctx.save(); ctx.fillStyle=css("--muted"); ctx.textAlign="left"; ctx.textBaseline="bottom";
+  ctx.font='11px system-ui,-apple-system,"Segoe UI",sans-serif';
+  ctx.fillText("%70", PAD.l+6, y-3); ctx.restore();
+}
+function curve(ctx,pts,color,label){
+  if(!pts.length) return;
+  ctx.strokeStyle=color; ctx.lineWidth=2; ctx.lineJoin="round"; ctx.lineCap="round";
+  ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x,pts[i].y);
+  ctx.stroke();
+  for(const p of pts){
+    ctx.fillStyle=css("--surface-1");
+    ctx.beginPath(); ctx.arc(p.x,p.y,5,0,7); ctx.fill();
+    ctx.fillStyle=color; ctx.beginPath(); ctx.arc(p.x,p.y,3.5,0,7); ctx.fill();
+    if(p.broke){                       // the mark, not only the colour
+      ctx.strokeStyle=css("--critical"); ctx.lineWidth=2;
+      ctx.beginPath();
+      ctx.moveTo(p.x-5,p.y-5); ctx.lineTo(p.x+5,p.y+5);
+      ctx.moveTo(p.x+5,p.y-5); ctx.lineTo(p.x-5,p.y+5); ctx.stroke();
+    }
+  }
+  /* Direct label at the end of the line: identity never rests on hue alone. */
+  const last=pts[pts.length-1];
+  ctx.fillStyle=css("--ink-2"); ctx.textAlign="left"; ctx.textBaseline="middle";
+  ctx.font='600 11px system-ui,-apple-system,"Segoe UI",sans-serif';
+  ctx.fillText(label, last.x+9, last.y);
+}
+
+/* ---- UART chart: log baud vs load ---- */
+let uartGeom=null;
+function drawUart(){
+  const c=$("cUart"); const {ctx,w,h}=prep(c);
+  const sel=rows.filter(r=>r.mode<3);
+  const gy=grid(ctx,w,h,1,[[0,"100 k"],[0.5,"1 M"],[1,"10 M"]]);
+  limitLine(ctx,w,gy(LOAD_LIMIT));
+  if(!sel.length){ uartGeom=null; return; }
+  const lo=Math.log10(100000), hi=Math.log10(10000000);
+  const gx=b=>PAD.l+(w-PAD.l-PAD.r)*(Math.log10(b)-lo)/(hi-lo);
+  const all=[];
+  for(const m of [0,1,2]){
+    const pts=sel.filter(r=>r.mode===m).sort((a,b)=>a.baud-b.baud)
+      .map(r=>({x:gx(r.baud),y:gy(Math.min(1,r.load_total/1e6)),broke:r.broke,r}));
+    curve(ctx,pts,css(COL[m]),MODE[m]);
+    all.push(...pts);
+  }
+  uartGeom={pts:all};
+}
+
+/* ---- synthetic chart: cycles/byte (descending) vs load ---- */
+let synthGeom=null;
+function drawSynth(){
+  const c=$("cSynth"); const {ctx,w,h}=prep(c);
+  const sel=rows.filter(r=>r.mode===255).sort((a,b)=>b.byte_cyc-a.byte_cyc);
+  const gy=grid(ctx,w,h,1,[[0,"1500 çevrim/bayt"],[0.5,"300"],[1,"60"]]);
+  limitLine(ctx,w,gy(LOAD_LIMIT));
+  if(!sel.length){ synthGeom=null; return; }
+  const lo=Math.log10(1500), hi=Math.log10(60);
+  const gx=v=>PAD.l+(w-PAD.l-PAD.r)*(Math.log10(v)-lo)/(hi-lo);
+  const real=sel.map(r=>({x:gx(r.byte_cyc),y:gy(Math.min(1,r.load_total/1e6)),broke:r.broke,r}));
+  const isr =sel.map(r=>({x:gx(r.byte_cyc),y:gy(Math.min(1,r.load_isr/1e6)),broke:0,r}));
+  curve(ctx,isr,css("--s2"),"ISR sayacı");
+  curve(ctx,real,css("--s1"),"gerçek");
+  synthGeom={pts:real};
+}
+
+/* ---- histogram ---- */
+function drawHist(){
+  const c=$("cHist"); const {ctx,w,h}=prep(c);
+  const r=rows.find(x=>x.i===selected);
+  const hist=r&&r.hist;
+  if(!hist||!hist.d||!hist.d.length){
+    ctx.fillStyle=css("--muted"); ctx.textAlign="center"; ctx.textBaseline="middle";
+    ctx.font='13px system-ui,-apple-system,"Segoe UI",sans-serif';
+    ctx.fillText("bu nokta için dağılım yok", w/2, h/2);
+    $("histDesc").textContent="Tablodan bir satır seçin.";
+    return;
+  }
+  const d=hist.d, max=Math.max(...d), plotW=w-PAD.l-PAD.r, plotH=h-PAD.t-PAD.b;
+  const bw=Math.max(1, plotW/d.length);
+  ctx.fillStyle=css("--s1");
+  for(let i=0;i<d.length;i++){
+    if(!d[i]) continue;
+    const bh=Math.max(1, plotH*d[i]/max);
+    /* 2px surface gap between bars, per the mark spec */
+    ctx.fillRect(PAD.l+i*bw, PAD.t+plotH-bh, Math.max(1,bw-2), bh);
+  }
+  ctx.strokeStyle=css("--axis"); ctx.lineWidth=1;
+  const yb=Math.round(PAD.t+plotH)+0.5;
+  ctx.beginPath(); ctx.moveTo(PAD.l,yb); ctx.lineTo(w-PAD.r,yb); ctx.stroke();
+  ctx.fillStyle=css("--muted"); ctx.font='11px system-ui,-apple-system,"Segoe UI",sans-serif';
+  ctx.textAlign="center"; ctx.textBaseline="top";
+  const c0=hist.lo*hist.scale, c1=(hist.lo+d.length-1)*hist.scale;
+  ctx.fillText(c0+" çevrim", PAD.l+18, h-PAD.b+7);
+  ctx.fillText(c1+" çevrim", w-PAD.r-18, h-PAD.b+7);
+  const label = r.mode===255 ? (r.byte_cyc+" çevrim/bayt") : (MODE[r.mode]+" · "+num(r.baud)+" baud");
+  $("histDesc").textContent = label+" — "+num(d.reduce((a,b)=>a+b,0))+" kesme, "+
+    hist.scale+" çevrimlik kutular";
+}
+
+/* ---- tooltips ---- */
+function hook(canvasId,tipId,geomFn){
+  const c=$(canvasId), tip=$(tipId);
+  c.addEventListener("mousemove",ev=>{
+    const g=geomFn(); if(!g||!g.pts.length){tip.style.opacity=0;return;}
+    const rect=c.getBoundingClientRect(), mx=ev.clientX-rect.left, my=ev.clientY-rect.top;
+    let best=null,bd=1e9;
+    for(const p of g.pts){const d=Math.hypot(p.x-mx,p.y-my); if(d<bd){bd=d;best=p;}}
+    if(bd>26){tip.style.opacity=0;return;}
+    const r=best.r;
+    tip.innerHTML =
+      "<b>"+MODE[r.mode]+"</b> "+(r.mode===255? r.byte_cyc+" çevrim/bayt" : num(r.baud)+" baud")+"<br>"+
+      "gerçek yük %"+pct(r.load_total)+" · ISR sayacı %"+pct(r.load_isr)+"<br>"+
+      "kesme/s "+num(r.irq_s)+" · ISR ort "+r.isr[1]+" çevrim<br>"+
+      (r.broke? "<span style='color:var(--critical)'>kırıldı</span>" : "dayandı");
+    tip.style.opacity=1;
+    const tw=tip.offsetWidth;
+    tip.style.left=Math.max(0,Math.min(c.clientWidth-tw,best.x-tw/2))+"px";
+    tip.style.top=Math.max(0,best.y-tip.offsetHeight-12)+"px";
+  });
+  c.addEventListener("mouseleave",()=>{tip.style.opacity=0;});
+  c.addEventListener("click",ev=>{
+    const g=geomFn(); if(!g) return;
+    const rect=c.getBoundingClientRect(), mx=ev.clientX-rect.left, my=ev.clientY-rect.top;
+    let best=null,bd=1e9;
+    for(const p of g.pts){const d=Math.hypot(p.x-mx,p.y-my); if(d<bd){bd=d;best=p;}}
+    if(best&&bd<26){ selected=best.r.i; dirty=true; }
+  });
+}
+hook("cUart","tUart",()=>uartGeom);
+hook("cSynth","tSynth",()=>synthGeom);
+
+/* ---- table ---- */
+function drawTable(){
+  const tb=$("tbl").tBodies[0];
+  const sorted=rows.slice().sort((a,b)=> a.i-b.i);
+  $("empty").style.display = sorted.length ? "none" : "block";
+  tb.innerHTML = sorted.map(r=>{
+    const reasons=[];
+    if(r.broke&1) reasons.push("veri kaybı");
+    if(r.broke&2) reasons.push("yük>%70");
+    if(r.broke&4) reasons.push("ISR>bayt");
+    const dev = r.mode<3 ? "%"+(r.dev_ppm/10000).toFixed(3) : "—";
+    return `<tr data-i="${r.i}" class="${r.broke?"broke":""} ${r.i===selected?"sel":""}">
+      <td>${MODE[r.mode]||r.mode}</td>
+      <td>${r.mode===255?"≈"+num(r.baud):num(r.baud)}</td>
+      <td>${dev}</td><td>${num(r.byte_cyc)}</td><td>${num(r.irq_s)}</td>
+      <td>${r.isr[0]}</td><td>${r.isr[1]}</td><td>${r.isr[2]}</td><td>${r.isr[3]}</td>
+      <td>%${pct(r.load_isr)}</td><td>%${pct(r.load_total)}</td><td>%${pct(r.load_worst)}</td>
+      <td>${num(r.missed)}</td><td>${num(r.ovr)}</td><td>${num(r.crc)}</td><td>${num(r.peak)}</td>
+      <td>${reasons.join(", ")||"—"}</td></tr>`;
+  }).join("");
+  for(const tr of tb.rows)
+    tr.onclick = () => { selected = +tr.dataset.i; dirty = true; };
+}
+
+/* ---- render loop ---- */
+function paint(){
+  const s=$("status");
+  if(status.run){
+    $("prog").style.width = (status.total? 100*status.point/status.total : 0).toFixed(1)+"%";
+    if(!s.classList.contains("err"))
+      s.textContent = "tarama sürüyor — nokta "+status.point+"/"+status.total;
+    for(const id of ["bUart","bHand","bBoth"]) $(id).disabled = true;
+  } else {
+    for(const id of ["bUart","bHand","bBoth"]) $(id).disabled = false;
+    if(rows.length && !s.classList.contains("err") && !s.classList.contains("ok"))
+      s.textContent = rows.length+" nokta hazır";
+    if(status.total && status.point>=status.total) $("prog").style.width="100%";
+  }
+  drawUart(); drawSynth(); drawHist(); drawTable();
+}
+function loop(){ if(dirty){ dirty=false; paint(); } requestAnimationFrame(loop); }
+window.addEventListener("resize",()=>{dirty=true;});
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

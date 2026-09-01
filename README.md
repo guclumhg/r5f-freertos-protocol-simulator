@@ -74,6 +74,56 @@ bursts: minimum **796** — exactly the arithmetic — mean 831, maximum 866, an
 every burst inside the band once the trace's own 12-byte sampling resolution is
 allowed for. The 4096-byte ring keeps 4.7× margin.
 
+## Where the architecture runs out
+
+A second page, at `/sweep`, answers a different question: at what point does
+handling one interrupt per byte stop working, and what has to change?
+
+It cannot be answered with baud rates alone. A PL011 oversamples by 16, so its
+ceiling is `clk_peri/16` and **a byte can never arrive faster than one per 160
+core clocks** — raising the system clock raises both sides of that ratio. So
+there are two sweeps. The UART sweep walks nine real rates up to the 9,375,000
+ceiling through three receive modes. The handler sweep drives the same workload
+from a timer, past any rate a UART can produce, until it genuinely stops
+keeping up, and reports in **core cycles per byte** — which is independent of
+the clock and therefore the one figure that transfers to the target.
+
+| | result |
+|---|---|
+| per-byte interrupt | **breaks at 8,000,000 baud** (187 cycles/byte) |
+| FIFO threshold, 16 bytes | no breakdown; 68.7 % at the ceiling |
+| DMA into the ring | no breakdown; **38.9 %** at the ceiling |
+| handler sweep | held at 180 cycles/byte, lost data at 160 |
+
+The two sweeps were measured by completely different means and landed within
+15 % of each other.
+
+**One interrupt costs about 158 core cycles, of which 36 is the handler body.**
+Measured from inside the handler the load reads 28 % where the idle loop says
+100 %: a cycle counter started inside an interrupt cannot see exception entry,
+exception exit or lazy FPU stacking. Four fifths of the cost of an interrupt is
+invisible from within it, which is why the load is measured twice and both
+numbers are reported.
+
+DMA is interesting for the opposite reason. Its interrupt load is 0.1 %, and
+the 38.9 % it uses at the ceiling is almost entirely the protocol task
+verifying frames — CRC, the demultiplexer, the payload check — at roughly 60
+cycles a byte. With DMA the limit stops being the interrupt and becomes the
+work.
+
+`docs/baud_taramasi.md` has every number, generated from the captured run by
+`scripts/sweep_report.py`. A reference capture is committed, so the document
+can be regenerated with no hardware:
+
+```sh
+python3 scripts/sweep_report.py logs/reference-sweep.ndjson
+```
+
+The sweep deliberately drives the board into a state where no task runs, so
+neither picotool nor the 1200-baud reset can reach it. `scripts/power-cycle.sh`
+cuts power to its USB port, and both dashboards expose it as a button — the
+only recovery available to whoever is standing in front of the projector.
+
 ## How it works
 
 ```
