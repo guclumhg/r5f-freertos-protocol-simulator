@@ -64,6 +64,12 @@ typedef struct {
     uint32_t missed;          /* ring overflow plus counter gaps */
     uint32_t crc_errors;
     uint32_t ring_peak;
+
+    /* Raw, for diagnosis: how long the window really was and how many bytes
+     * actually arrived in it. */
+    uint32_t window_us;
+    uint32_t bytes_rx;
+    uint32_t budget;
 } sweep_row_t;
 
 void sweep_init(void);

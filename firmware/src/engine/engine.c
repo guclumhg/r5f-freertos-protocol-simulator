@@ -291,6 +291,15 @@ void PORT_HOT(engine_on_synth_tick)(void)
     s_bytes_rx++;
 }
 
+void engine_rx_resync(void)
+{
+    s_verifier.have_last    = false;
+    s_verifier.state        = 0;      /* hunt for a header again */
+    s_verifier.fill         = 0;
+    s_verifier.bridge_bytes = 0;
+
+}
+
 void engine_pause(void)
 {
     s_paused = true;

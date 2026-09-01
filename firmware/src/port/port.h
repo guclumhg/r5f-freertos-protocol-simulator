@@ -94,8 +94,26 @@ rx_mode_t port_rx_mode(void);
  * CPU at all. Without this the transmit pacer would be a second interrupt
  * competing with the one being measured, at exactly the rates where that
  * matters most. */
-void port_tx_dma_start(const uint8_t *buf, uint32_t len);
+void port_tx_dma_start(const uint8_t *buf, uint32_t len, uint32_t loops);
 void port_tx_dma_stop(void);
+bool port_tx_dma_busy(void);
+
+/* A receive budget, for the same reason the synthetic source has one. At the
+ * top of the baud range the receive interrupt takes the whole core and no
+ * task ever runs again - including the one that would have stopped the
+ * measurement. The interrupt has to be able to switch itself off. Zero means
+ * no limit, which is how the normal measurement runs. */
+/* A byte budget alone is not enough. Past saturation the receiver drops bytes,
+ * so the interrupt fires fewer times than the budget and never reaches zero -
+ * and the board stays wedged at exactly the point the sweep was measuring. A
+ * deadline the interrupt also checks is what guarantees it comes back. */
+void port_rx_budget(uint32_t bytes, uint32_t deadline_us);
+bool port_rx_budget_spent(void);
+
+/* Microseconds from the always-on timer. Needed because the scheduler tick is
+ * starved at saturation, so a delay of "five seconds" can be thirty, and
+ * every rate computed from the nominal window would be wrong. */
+uint32_t port_us(void);
 
 void port_stop_ticks(void);
 

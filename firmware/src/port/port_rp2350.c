@@ -27,6 +27,7 @@
 #include "hardware/irq.h"
 #include "hardware/pwm.h"
 #include "hardware/regs/intctrl.h"
+#include "hardware/structs/timer.h"
 #include "hardware/structs/uart.h"
 #include "hardware/sync.h"
 #include "hardware/uart.h"
@@ -73,6 +74,13 @@ static uint32_t        s_clk_hz;
 static bool            s_cycles_ok;
 static uint32_t        s_overrun_hw;
 
+/* Declared up here because the receive interrupt below counts it down, and
+ * that interrupt is the first thing in the file. Zero means no limit. */
+static volatile uint32_t s_rx_budget;
+static volatile uint32_t s_rx_deadline_us;
+static volatile bool     s_rx_limited;
+static rx_mode_t         s_rx_mode = RX_MODE_PER_BYTE;
+
 /* ------------------------------------------------------------- interrupts */
 
 static void __not_in_flash_func(on_uart_rx)(void)
@@ -80,15 +88,44 @@ static void __not_in_flash_func(on_uart_rx)(void)
     gpio_put(PIN_PROBE_ISR, 1);
     uint32_t t0 = DWT_CYCCNT;
 
-    /* One read takes the byte and its error flags together. With the FIFOs
-     * off there is at most one byte waiting. */
-    uint32_t dr = uart_get_hw(uart0)->dr;
-    engine_on_rx_byte((uint8_t)(dr & 0xFFu), dr);
+    if (s_rx_mode == RX_MODE_PER_BYTE) {
+        /* One read takes the byte and its error flags together. With the
+         * FIFOs off there is at most one byte waiting. */
+        uint32_t dr = uart_get_hw(uart0)->dr;
+        engine_on_rx_byte((uint8_t)(dr & 0xFFu), dr);
+    } else {
+        /* With a FIFO threshold the whole point is to take everything the
+         * hardware gathered. Reading one byte and returning would leave the
+         * FIFO above the threshold, the interrupt would re-assert
+         * immediately, and the mode would cost exactly what per-byte costs -
+         * which is what it did before this loop existed. */
+        while (!(uart_get_hw(uart0)->fr & UART_UARTFR_RXFE_BITS)) {
+            uint32_t dr = uart_get_hw(uart0)->dr;
+            engine_on_rx_byte((uint8_t)(dr & 0xFFu), dr);
+        }
+    }
 
     uint32_t t1 = DWT_CYCCNT;
 
     /* Outside the measured window on purpose - see port.h. */
     engine_record_isr(t1 - t0);
+
+    if (s_rx_limited) {
+        /* Above saturation this is the only code left that runs. Without it
+         * the sweep wedges the board at the exact point it was trying to
+         * measure, and the measurement is lost with it. The deadline matters
+         * as much as the count: once bytes start being dropped the count can
+         * never finish. */
+        bool done = (s_rx_budget == 0u) || (--s_rx_budget == 0u);
+        if (!done) {
+            done = (int32_t)(timer_hw->timerawl - s_rx_deadline_us) >= 0;
+        }
+        if (done) {
+            s_rx_budget  = 0;
+            s_rx_limited = false;
+            uart_set_irq_enables(uart0, false, false);
+        }
+    }
     gpio_put(PIN_PROBE_ISR, 0);
 }
 
@@ -245,7 +282,6 @@ void     port_irq_restore(uint32_t s) { restore_interrupts(s); }
 #define SLICE_SYNTH   8u
 #define RX_DMA_BLOCK  256u      /* bytes per DMA receive interrupt */
 
-static rx_mode_t s_rx_mode = RX_MODE_PER_BYTE;
 static int  s_dma_tx_a = -1, s_dma_tx_b = -1, s_dma_rx = -1;
 /* Channel B writes this value into channel A's read-address trigger, which
  * is what makes the transmit stream loop forever without the CPU. It has to
@@ -353,11 +389,14 @@ void port_set_rx_mode(rx_mode_t mode)
 
     case RX_MODE_FIFO_TH:
         uart_set_fifo_enabled(uart0, true);
-        /* Receive interrupt at half full: 16 of the 32 byte FIFO. */
+        uart_set_irq_enables(uart0, true, false);
+        /* After, not before. uart_set_irq_enables quietly writes the receive
+         * threshold back to one eighth on its way out, so setting it first
+         * gets silently undone - and the mode ends up interrupting every four
+         * bytes instead of every sixteen, which is per-byte with extra steps. */
         hw_write_masked(&uart_get_hw(uart0)->ifls,
                         2u << UART_UARTIFLS_RXIFLSEL_LSB,
                         UART_UARTIFLS_RXIFLSEL_BITS);
-        uart_set_irq_enables(uart0, true, false);
         break;
 
     case RX_MODE_DMA:
@@ -372,7 +411,20 @@ rx_mode_t port_rx_mode(void) { return s_rx_mode; }
 
 /* ------------------------------------------------------------ DMA transmit */
 
-void port_tx_dma_start(const uint8_t *buf, uint32_t len)
+void port_rx_budget(uint32_t bytes, uint32_t deadline_us)
+{
+    s_rx_deadline_us = deadline_us;
+    s_rx_budget      = bytes;
+    s_rx_limited     = (bytes != 0u);
+}
+
+bool port_rx_budget_spent(void) { return !s_rx_limited; }
+uint32_t port_us(void)               { return time_us_32(); }
+
+/* `loops` bounds how many times the buffer is replayed, so the stimulus stops
+ * on its own. An endless transmitter plus a saturated receiver is a board
+ * that cannot be talked to again. */
+void port_tx_dma_start(const uint8_t *buf, uint32_t len, uint32_t loops)
 {
     s_tx_buf_ptr = buf;
 
@@ -399,20 +451,54 @@ void port_tx_dma_start(const uint8_t *buf, uint32_t len)
     channel_config_set_transfer_data_size(&b, DMA_SIZE_32);
     channel_config_set_read_increment(&b, false);
     channel_config_set_write_increment(&b, false);
+    /* Channel B reloads A this many times and then stops chaining, which is
+     * what makes the whole stream finite. */
     dma_channel_configure((uint)s_dma_tx_b, &b,
                           &dma_hw->ch[(uint)s_dma_tx_a].al3_read_addr_trig,
-                          &s_tx_buf_ptr, 1, false);
+                          &s_tx_buf_ptr, loops ? loops : 1u, false);
 
     dma_channel_start((uint)s_dma_tx_a);
 }
 
+bool port_tx_dma_busy(void)
+{
+    return s_dma_tx_a >= 0 && dma_channel_is_busy((uint)s_dma_tx_a);
+}
+
+/* Aborting a chained pair is not two aborts.
+ *
+ * Channel B exists to retrigger channel A, so aborting A while B is still
+ * armed just starts A again - and the transmitter keeps running into the next
+ * measurement's setup. The chain has to be broken first: point A at itself,
+ * which is how the hardware spells "no chain", then stop B, then stop A. */
 void port_tx_dma_stop(void)
 {
     if (s_dma_tx_a < 0) {
         return;
     }
-    dma_channel_abort((uint)s_dma_tx_b);
-    dma_channel_abort((uint)s_dma_tx_a);
+    const uint a = (uint)s_dma_tx_a, b = (uint)s_dma_tx_b;
+
+    hw_write_masked(&dma_hw->ch[a].al1_ctrl,
+                    a << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB,
+                    DMA_CH0_CTRL_TRIG_CHAIN_TO_BITS);
+    hw_write_masked(&dma_hw->ch[b].al1_ctrl,
+                    b << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB,
+                    DMA_CH0_CTRL_TRIG_CHAIN_TO_BITS);
+
+    dma_channel_abort(b);
+    dma_channel_abort(a);
+
+    /* And drain whatever the transmitter still has in hand, so the next point
+     * does not start with the previous point's tail on the line. Bounded: if
+     * the UART has been disabled in the meantime the empty flag never
+     * asserts, and an unbounded wait here would hang the sweep. */
+    const uint32_t give_up = time_us_32() + 20000u;
+    while (!(uart_get_hw(uart0)->fr & UART_UARTFR_TXFE_BITS)) {
+        if ((int32_t)(time_us_32() - give_up) >= 0) {
+            break;
+        }
+        tight_loop_contents();
+    }
 }
 
 void port_stop_ticks(void)

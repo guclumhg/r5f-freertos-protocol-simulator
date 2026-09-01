@@ -222,7 +222,8 @@ void telemetry_task(void *arg)
                 "\"byte_cyc\":%u,\"irq_cyc\":%u,"
                 "\"isr\":[%u,%u,%u,%u],\"irq_s\":%u,"
                 "\"load_isr\":%u,\"load_total\":%u,\"load_worst\":%u,"
-                "\"ovr\":%u,\"missed\":%u,\"crc\":%u,\"peak\":%u",
+                "\"ovr\":%u,\"missed\":%u,\"crc\":%u,\"peak\":%u,"
+                "\"win_us\":%u,\"bytes\":%u,\"budget\":%u",
                 row.index, row.mode, row.broke,
                 (unsigned)row.target_baud, (unsigned)row.actual_baud,
                 (int)row.deviation_ppm,
@@ -233,7 +234,9 @@ void telemetry_task(void *arg)
                 (unsigned)row.load_isr_ppm, (unsigned)row.load_total_ppm,
                 (unsigned)row.worst_load_ppm,
                 (unsigned)row.overruns, (unsigned)row.missed,
-                (unsigned)row.crc_errors, (unsigned)row.ring_peak);
+                (unsigned)row.crc_errors, (unsigned)row.ring_peak,
+                (unsigned)row.window_us, (unsigned)row.bytes_rx,
+                (unsigned)row.budget);
 
             const uint32_t *h = engine_hist();
             uint32_t lo = 0, hi = 0;
@@ -283,6 +286,10 @@ void telemetry_task(void *arg)
             fflush(stdout);
         }
 
-        engine_reset_window();
+        /* The sweep resets its own window and reads the extremes over it.
+         * Clearing them here every 100 ms would hand it the wrong numbers. */
+        if (!sw.running) {
+            engine_reset_window();
+        }
     }
 }

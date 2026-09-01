@@ -118,6 +118,13 @@ const uint32_t *engine_hist(void);  /* ISR_HIST_BINS entries, last is overflow *
 void engine_pause(void);
 void engine_resume(void);
 
+/* Forget where the frame counter was. Each sweep point restarts the transmit
+ * buffer from its beginning, so the first frame of a point follows the last
+ * frame of the previous one by an arbitrary jump. That is a discontinuity in
+ * the stimulus, not a lost frame, and counting it as loss would mark every
+ * single point as broken. */
+void engine_rx_resync(void);
+
 /* The two FreeRTOS tasks. Priorities are set in main.c. */
 void engine_protocol_task(void *arg);
 void engine_sensor_task(void *arg);
