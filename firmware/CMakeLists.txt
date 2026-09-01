@@ -15,6 +15,7 @@ pico_sdk_init()
 set(R5F_SOURCES
     src/main.c
     src/telemetry.c
+    src/sweep.c
     src/engine/engine.c
     src/engine/frame.c
     src/engine/isotp.c
@@ -33,6 +34,7 @@ target_link_libraries(r5f_sim PRIVATE
     pico_stdlib
     hardware_uart
     hardware_pwm
+    hardware_dma
     hardware_gpio
     hardware_irq
     hardware_clocks

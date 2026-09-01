@@ -4,16 +4,37 @@
 
 enum { ST_SYNC0 = 0, ST_SYNC1, ST_COLLECT };
 
+/* Table driven, and the table lives in RAM.
+ *
+ * The bitwise version cost about forty cycles per byte. That is invisible at
+ * 115200 baud and fatal above about two megabaud: the verifier would saturate
+ * a whole task before the receive interrupt came anywhere near its limit, and
+ * the checksum errors that followed would look like a protocol failure rather
+ * than what they were - the checker failing to keep up. Four cycles per byte
+ * keeps the thing being measured the thing being measured. */
+static uint16_t s_crc_table[256];
+static bool     s_crc_ready;
+
+void frame_crc_init(void)
+{
+    for (uint32_t i = 0; i < 256u; i++) {
+        uint16_t crc = (uint16_t)(i << 8);
+        for (int bit = 0; bit < 8; bit++) {
+            crc = (crc & 0x8000u) ? (uint16_t)((crc << 1) ^ 0x1021u)
+                                  : (uint16_t)(crc << 1);
+        }
+        s_crc_table[i] = crc;
+    }
+    s_crc_ready = true;
+}
+
 uint16_t frame_crc16(const uint8_t *data, uint32_t len)
 {
     uint16_t crc = 0xFFFFu;
 
     for (uint32_t i = 0; i < len; i++) {
-        crc ^= (uint16_t)data[i] << 8;
-        for (int bit = 0; bit < 8; bit++) {
-            crc = (crc & 0x8000u) ? (uint16_t)((crc << 1) ^ 0x1021u)
-                                  : (uint16_t)(crc << 1);
-        }
+        crc = (uint16_t)((crc << 8) ^
+                         s_crc_table[((crc >> 8) ^ data[i]) & 0xFFu]);
     }
     return crc;
 }
@@ -28,7 +49,7 @@ void frame_build_sensor(uint8_t *out, uint8_t counter)
      * pattern can forge the header. */
     for (uint32_t i = 0; i < FRAME_PAYLOAD_BYTES; i++) {
         out[FRAME_HEADER_BYTES + FRAME_COUNTER_BYTES + i] =
-            (uint8_t)((counter + i) & 0x7Fu);
+            frame_payload_byte(counter, i);
     }
 
     uint16_t crc = frame_crc16(out, FRAME_LEN - FRAME_CRC_BYTES);
@@ -38,6 +59,9 @@ void frame_build_sensor(uint8_t *out, uint8_t counter)
 
 void frame_rx_init(frame_rx_t *fr)
 {
+    if (!s_crc_ready) {
+        frame_crc_init();
+    }
     memset(fr, 0, sizeof(*fr));
     fr->state = ST_SYNC0;
 }
@@ -73,6 +97,19 @@ static void check_frame(frame_rx_t *fr)
     }
 
     uint8_t counter = fr->buf[2];
+
+    /* Read the 64 bytes, do not merely accept them. The checksum would have
+     * caught corruption; this catches a frame that is structurally perfect
+     * and semantically wrong, and it is the check that says the receiver
+     * understood the payload rather than just stored it. */
+    const uint8_t *payload = frame_payload(fr->buf);
+    for (uint32_t i = 0; i < FRAME_PAYLOAD_BYTES; i++) {
+        if (payload[i] != frame_payload_byte(counter, i)) {
+            fr->payload_errors++;
+            break;
+        }
+    }
+
     if (fr->have_last) {
         uint8_t expected = (uint8_t)(fr->last_counter + 1u);
         if (counter != expected) {

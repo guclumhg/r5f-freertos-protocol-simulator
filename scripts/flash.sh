@@ -16,11 +16,24 @@ find_bootsel() {
 
 DEV="$(find_bootsel || true)"
 
+# picotool is built as part of the SDK build and resets through the USB vendor
+# interface, which works even when the 1200 baud trick does not.
+PICOTOOL="$ROOT/firmware/build/_deps/picotool/picotool"
+
+if [ -z "$DEV" ] && [ -x "$PICOTOOL" ]; then
+    echo "asking the board to reboot into BOOTSEL (picotool)"
+    sudo "$PICOTOOL" reboot -f -u >/dev/null 2>&1 || true
+    for _ in $(seq 1 20); do
+        sleep 0.5
+        DEV="$(find_bootsel || true)"
+        [ -n "$DEV" ] && break
+    done
+fi
+
 if [ -z "$DEV" ]; then
     PORT="$(ls /dev/ttyACM* 2>/dev/null | head -1 || true)"
     if [ -n "$PORT" ]; then
-        echo "asking $PORT to reboot into BOOTSEL"
-        # 1200 baud with DTR dropped is the Pico's reset-to-bootloader signal
+        echo "asking $PORT to reboot into BOOTSEL (1200 baud)"
         stty -F "$PORT" 1200 hupcl || true
         for _ in $(seq 1 30); do
             sleep 0.5

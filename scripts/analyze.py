@@ -148,6 +148,7 @@ def main(path):
         ("sensor CRC errors", delta("frames", "crc")),
         ("sensor counter gaps", delta("frames", "gaps")),
         ("resyncs", delta("frames", "resync")),
+        ("payload content errors", delta("frames", "payload")),
         ("ISO-TP reassembly errors", delta("can", "isotp_err")),
         ("RX ring overflow", last["rx"]["ovf"]),
         ("bridge ring overflow", last["bridge"]["ovf"]),
@@ -163,6 +164,9 @@ def main(path):
         row("answered from snapshot", str(delta("req", "answered")),
             str(delta("req", "sent")))
         row("failed", str(delta("req", "failed")), "0")
+        answered = delta("req", "answered")
+        row("payload bytes handed over", str(delta("req", "bytes")),
+            f"{answered * 64} ({answered} x 64)")
         row("answer latency, mean",
             f"{us(last['req']['lat_mean']):.0f} us", "~500 us (1 ms poll)")
         # One poll period plus however long the task waits to be scheduled,

@@ -22,6 +22,7 @@
 #include "port/port.h"
 
 #include "hardware/clocks.h"
+#include "hardware/dma.h"
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
 #include "hardware/pwm.h"
@@ -229,6 +230,265 @@ uint32_t port_uart_overrun(void)
 
 uint32_t port_irq_save(void)          { return save_and_disable_interrupts(); }
 void     port_irq_restore(uint32_t s) { restore_interrupts(s); }
+
+/* =========================================================================
+ * Baud sweep support
+ *
+ * The PL011 oversamples by 16, so its top speed is clk_peri/16 and a byte
+ * can never arrive faster than one per 160 core clocks. Raising the system
+ * clock raises both sides of that ratio, so it does not move. That is why
+ * there is a synthetic mode here as well as a real one: the real sweep says
+ * whether a UART bridge works, and the synthetic sweep finds where the
+ * per-byte architecture actually stops.
+ * ========================================================================= */
+
+#define SLICE_SYNTH   8u
+#define RX_DMA_BLOCK  256u      /* bytes per DMA receive interrupt */
+
+static rx_mode_t s_rx_mode = RX_MODE_PER_BYTE;
+static int  s_dma_tx_a = -1, s_dma_tx_b = -1, s_dma_rx = -1;
+/* Channel B writes this value into channel A's read-address trigger, which
+ * is what makes the transmit stream loop forever without the CPU. It has to
+ * outlive the setup function, so it lives here. */
+static const uint8_t *s_tx_buf_ptr;
+static bool s_synth_running;
+static volatile uint32_t s_synth_budget;
+
+static void uart_quiesce(void)
+{
+    uart_set_irq_enables(uart0, false, false);
+    hw_clear_bits(&uart_get_hw(uart0)->cr, UART_UARTCR_UARTEN_BITS);
+    /* Drain anything the receiver is still holding. */
+    while (uart_is_readable(uart0)) {
+        (void)uart_get_hw(uart0)->dr;
+    }
+    uart_get_hw(uart0)->rsr = 0;
+}
+
+static void uart_resume(void)
+{
+    hw_set_bits(&uart_get_hw(uart0)->cr, UART_UARTCR_UARTEN_BITS);
+}
+
+uint32_t port_set_baud(uint32_t want)
+{
+    uart_quiesce();
+    s_actual_baud = uart_set_baudrate(uart0, want);
+    /* uart_set_baudrate rewrites the line control register, which clears the
+     * loopback bit and the frame format. Put them back. */
+    uart_set_format(uart0, 8, 1, UART_PARITY_NONE);
+    if (s_mode == LOOPBACK_INTERNAL) {
+        hw_set_bits(&uart_get_hw(uart0)->cr, UART_UARTCR_LBE_BITS);
+    }
+    port_set_rx_mode(s_rx_mode);
+    uart_resume();
+    return s_actual_baud;
+}
+
+/* ------------------------------------------------------------- DMA receive */
+
+static void __not_in_flash_func(on_rx_dma)(void)
+{
+    gpio_put(PIN_PROBE_ISR, 1);
+    uint32_t t0 = DWT_CYCCNT;
+
+    dma_hw->ints1 = 1u << (uint32_t)s_dma_rx;
+    engine_on_rx_block(RX_DMA_BLOCK);
+    /* The write address wraps by itself; only the count needs rearming. */
+    dma_channel_set_trans_count((uint)s_dma_rx, RX_DMA_BLOCK, true);
+
+    uint32_t t1 = DWT_CYCCNT;
+    engine_record_isr(t1 - t0);
+    gpio_put(PIN_PROBE_ISR, 0);
+}
+
+static void rx_dma_start(void)
+{
+    uint8_t *buf = NULL;
+    uint32_t size = 0;
+    engine_rx_ring_storage(&buf, &size);
+
+    if (s_dma_rx < 0) {
+        s_dma_rx = dma_claim_unused_channel(true);
+    }
+    dma_channel_config c = dma_channel_get_default_config((uint)s_dma_rx);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
+    channel_config_set_read_increment(&c, false);
+    channel_config_set_write_increment(&c, true);
+    /* Wrap the write address inside the ring, so the hardware never walks
+     * off the end and the handler only has to move an index. */
+    channel_config_set_ring(&c, true, 12);      /* 2^12 = 4096 */
+    channel_config_set_dreq(&c, DREQ_UART0_RX);
+
+    dma_channel_configure((uint)s_dma_rx, &c, buf,
+                          &uart_get_hw(uart0)->dr, RX_DMA_BLOCK, false);
+
+    dma_channel_set_irq1_enabled((uint)s_dma_rx, true);
+    irq_set_exclusive_handler(DMA_IRQ_1, on_rx_dma);
+    irq_set_priority(DMA_IRQ_1, PRIO_UART_RX);
+    irq_set_enabled(DMA_IRQ_1, true);
+    dma_channel_start((uint)s_dma_rx);
+}
+
+static void rx_dma_stop(void)
+{
+    if (s_dma_rx < 0) {
+        return;
+    }
+    dma_channel_abort((uint)s_dma_rx);
+    dma_channel_set_irq1_enabled((uint)s_dma_rx, false);
+    irq_set_enabled(DMA_IRQ_1, false);
+}
+
+void port_set_rx_mode(rx_mode_t mode)
+{
+    uart_set_irq_enables(uart0, false, false);
+    rx_dma_stop();
+
+    switch (mode) {
+    case RX_MODE_PER_BYTE:
+        uart_set_fifo_enabled(uart0, false);
+        uart_set_irq_enables(uart0, true, false);
+        break;
+
+    case RX_MODE_FIFO_TH:
+        uart_set_fifo_enabled(uart0, true);
+        /* Receive interrupt at half full: 16 of the 32 byte FIFO. */
+        hw_write_masked(&uart_get_hw(uart0)->ifls,
+                        2u << UART_UARTIFLS_RXIFLSEL_LSB,
+                        UART_UARTIFLS_RXIFLSEL_BITS);
+        uart_set_irq_enables(uart0, true, false);
+        break;
+
+    case RX_MODE_DMA:
+        uart_set_fifo_enabled(uart0, true);
+        rx_dma_start();
+        break;
+    }
+    s_rx_mode = mode;
+}
+
+rx_mode_t port_rx_mode(void) { return s_rx_mode; }
+
+/* ------------------------------------------------------------ DMA transmit */
+
+void port_tx_dma_start(const uint8_t *buf, uint32_t len)
+{
+    s_tx_buf_ptr = buf;
+
+    if (s_dma_tx_a < 0) {
+        s_dma_tx_a = dma_claim_unused_channel(true);
+        s_dma_tx_b = dma_claim_unused_channel(true);
+    }
+
+    /* Channel A streams the buffer at the UART's pace. Channel B does one
+     * write - resetting A's read pointer, which retriggers it - and chains
+     * back. Between them the transmitter runs forever at zero CPU cost, which
+     * is the whole point: the stimulus must not compete with the interrupt
+     * being measured. */
+    dma_channel_config a = dma_channel_get_default_config((uint)s_dma_tx_a);
+    channel_config_set_transfer_data_size(&a, DMA_SIZE_8);
+    channel_config_set_read_increment(&a, true);
+    channel_config_set_write_increment(&a, false);
+    channel_config_set_dreq(&a, DREQ_UART0_TX);
+    channel_config_set_chain_to(&a, (uint)s_dma_tx_b);
+    dma_channel_configure((uint)s_dma_tx_a, &a,
+                          &uart_get_hw(uart0)->dr, buf, len, false);
+
+    dma_channel_config b = dma_channel_get_default_config((uint)s_dma_tx_b);
+    channel_config_set_transfer_data_size(&b, DMA_SIZE_32);
+    channel_config_set_read_increment(&b, false);
+    channel_config_set_write_increment(&b, false);
+    dma_channel_configure((uint)s_dma_tx_b, &b,
+                          &dma_hw->ch[(uint)s_dma_tx_a].al3_read_addr_trig,
+                          &s_tx_buf_ptr, 1, false);
+
+    dma_channel_start((uint)s_dma_tx_a);
+}
+
+void port_tx_dma_stop(void)
+{
+    if (s_dma_tx_a < 0) {
+        return;
+    }
+    dma_channel_abort((uint)s_dma_tx_b);
+    dma_channel_abort((uint)s_dma_tx_a);
+}
+
+void port_stop_ticks(void)
+{
+    pwm_set_enabled(SLICE_BYTE_TICK, false);
+    pwm_set_enabled(SLICE_CAN_SLOT, false);
+}
+
+/* ------------------------------------------------- synthetic handler load */
+
+static void __not_in_flash_func(on_synth)(void)
+{
+    gpio_put(PIN_PROBE_ISR, 1);
+    uint32_t t0 = DWT_CYCCNT;
+
+    pwm_clear_irq(SLICE_SYNTH);
+    engine_on_synth_tick();
+
+    uint32_t t1 = DWT_CYCCNT;
+    engine_record_isr(t1 - t0);
+
+    if (s_synth_budget && --s_synth_budget == 0u) {
+        /* Switch the source off from inside the interrupt it is driving.
+         * Above saturation this is the only code that still gets to run. */
+        pwm_set_enabled(SLICE_SYNTH, false);
+        pwm_set_irq0_enabled(SLICE_SYNTH, false);
+    }
+    gpio_put(PIN_PROBE_ISR, 0);
+}
+
+void port_synth_start(uint32_t cycles, uint32_t budget)
+{
+    port_synth_stop();
+    if (cycles < 8u || cycles > 65535u || budget == 0u) {
+        return;
+    }
+    s_synth_budget = budget;
+
+    pwm_config c = pwm_get_default_config();
+    pwm_config_set_clkdiv_int(&c, 1);
+    pwm_config_set_wrap(&c, (uint16_t)(cycles - 1u));
+    pwm_init(SLICE_SYNTH, &c, false);
+    pwm_clear_irq(SLICE_SYNTH);
+    pwm_set_irq0_enabled(SLICE_SYNTH, true);
+    /* Shares PWM_IRQ_WRAP_0 with the byte tick, which the sweep has stopped.
+     * The old handler has to be removed first: setting an exclusive handler
+     * over an existing one is a panic, not an overwrite. */
+    irq_remove_handler(PWM_IRQ_WRAP_0, on_byte_tick);
+    irq_set_exclusive_handler(PWM_IRQ_WRAP_0, on_synth);
+    irq_set_priority(PWM_IRQ_WRAP_0, PRIO_UART_RX);
+    irq_set_enabled(PWM_IRQ_WRAP_0, true);
+    pwm_set_enabled(SLICE_SYNTH, true);
+    s_synth_running = true;
+}
+
+bool port_synth_done(void)
+{
+    return s_synth_budget == 0u;
+}
+
+void port_synth_stop(void)
+{
+    if (!s_synth_running) {
+        return;
+    }
+    s_synth_budget = 0;
+    pwm_set_enabled(SLICE_SYNTH, false);
+    pwm_set_irq0_enabled(SLICE_SYNTH, false);
+    irq_set_enabled(PWM_IRQ_WRAP_0, false);
+    /* Give the byte tick its handler back, same rule in reverse. */
+    irq_remove_handler(PWM_IRQ_WRAP_0, on_synth);
+    irq_set_exclusive_handler(PWM_IRQ_WRAP_0, on_byte_tick);
+    irq_set_priority(PWM_IRQ_WRAP_0, PRIO_BYTE_TICK);
+    irq_set_enabled(PWM_IRQ_WRAP_0, true);
+    s_synth_running = false;
+}
 
 /* FreeRTOS run time statistics counter: 1 us, free running, one load. */
 unsigned long r5f_runtime_counter(void)

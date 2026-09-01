@@ -22,7 +22,11 @@
 
 #define configUSE_PREEMPTION                    1
 #define configUSE_TICKLESS_IDLE                 0
-#define configUSE_IDLE_HOOK                     0
+/* The idle hook is how true CPU load gets measured. The cycle counter inside
+ * an interrupt handler cannot see exception entry and exit - about 25 cycles
+ * on this core - which is a rounding error at 115200 baud and a third of the
+ * budget at eight megabaud. Counting idle loops misses nothing. */
+#define configUSE_IDLE_HOOK                     1
 #define configUSE_TICK_HOOK                     0
 #define configTICK_RATE_HZ                      ((TickType_t)1000)
 #define configMAX_PRIORITIES                    32

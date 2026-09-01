@@ -71,6 +71,54 @@ uint32_t port_actual_baud(void);
  * 19.845 ms window can be confirmed on a scope rather than only believed. */
 void port_probe_burst(bool on);
 
+/* ------------------------------------------------------------------------
+ * Baud sweep support. None of this is used by the normal measurement; it
+ * exists to find where the per-byte interrupt architecture stops working.
+ * ---------------------------------------------------------------------- */
+
+typedef enum {
+    RX_MODE_PER_BYTE = 0,   /* FIFO off, one interrupt per byte */
+    RX_MODE_FIFO_TH,        /* FIFO on, interrupt at half full */
+    RX_MODE_DMA,            /* DMA into the ring, interrupt per block */
+} rx_mode_t;
+
+/* Sets the baud rate and returns what the divider actually produced. The
+ * PL011 divides by 16 before anything else, so the ceiling is clk_peri/16
+ * and a byte can never take fewer than 160 core clocks - which is the reason
+ * this sweep needs a synthetic mode as well as a real one. */
+uint32_t  port_set_baud(uint32_t want);
+void      port_set_rx_mode(rx_mode_t mode);
+rx_mode_t port_rx_mode(void);
+
+/* Feeds the transmitter from DMA so that generating the stimulus costs no
+ * CPU at all. Without this the transmit pacer would be a second interrupt
+ * competing with the one being measured, at exactly the rates where that
+ * matters most. */
+void port_tx_dma_start(const uint8_t *buf, uint32_t len);
+void port_tx_dma_stop(void);
+
+void port_stop_ticks(void);
+
+/* Fires engine_on_synth_tick every `cycles` core clocks, so the receive
+ * handler's own workload can be driven past any rate the UART can produce.
+ *
+ * It stops itself after `budget` interrupts, and that is not a convenience.
+ * Past the saturation point the handler re-enters before it has finished
+ * returning, no task ever runs again, and the system cannot report the very
+ * thing the sweep exists to find. A budget the interrupt counts down itself
+ * is the only thing that still works when nothing else does. */
+void port_synth_start(uint32_t cycles, uint32_t budget);
+bool port_synth_done(void);
+void port_synth_stop(void);
+
+/* Callbacks for the modes above. Same rules: no FreeRTOS API. */
+void engine_on_rx_block(uint32_t bytes);   /* DMA wrote this many */
+void engine_on_synth_tick(void);
+
+/* The DMA receive mode writes straight into the engine's ring, so the port
+ * has to know where it is. */
+void engine_rx_ring_storage(uint8_t **buf, uint32_t *size_pow2);
+
 /* Short critical section. Used only to take consistent snapshots of counters
  * that an interrupt also writes; never held across anything slow. */
 uint32_t port_irq_save(void);

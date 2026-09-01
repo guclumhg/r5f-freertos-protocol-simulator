@@ -22,6 +22,7 @@
 #include "config.h"
 #include "engine/engine.h"
 #include "port/port.h"
+#include "sweep.h"
 
 #define MAX_TASKS   8
 #define LINE_BYTES  3072
@@ -176,10 +177,10 @@ void telemetry_task(void *arg)
 
         w_printf(&w,
             "\"frames\":{\"ok\":%u,\"crc\":%u,\"gaps\":%u,\"resync\":%u,"
-                       "\"built\":%u},",
+                       "\"payload\":%u,\"built\":%u},",
             (unsigned)s_stats.frames_ok, (unsigned)s_stats.crc_errors,
             (unsigned)s_stats.counter_gaps, (unsigned)s_stats.resyncs,
-            (unsigned)s_stats.frames_built);
+            (unsigned)s_stats.payload_errors, (unsigned)s_stats.frames_built);
 
         w_printf(&w,
             "\"can\":{\"bursts\":%u,\"frames\":%u,\"data\":%u,\"active\":%d,"
@@ -190,13 +191,73 @@ void telemetry_task(void *arg)
 
         w_printf(&w,
             "\"req\":{\"sent\":%u,\"answered\":%u,\"failed\":%u,"
-                    "\"lat_mean\":%u,\"lat_max\":%u},",
+                    "\"bytes\":%u,\"lat_mean\":%u,\"lat_max\":%u},",
             (unsigned)s_stats.requests, (unsigned)s_stats.responses,
             (unsigned)s_stats.response_failures,
+            (unsigned)s_stats.response_bytes,
             (unsigned)stat_mean(&s_stats.response_latency),
             (unsigned)s_stats.response_latency.max);
 
         cpu_json(&w);
+
+        /* Sweep progress rides along on every packet, so the sweep page can
+         * show where it is without a second connection. */
+        sweep_status_t sw;
+        sweep_status(&sw);
+        if (sw.running || sw.point) {
+            w_printf(&w, ",\"sweep\":{\"run\":%u,\"kind\":%u,\"point\":%u,"
+                         "\"total\":%u,\"baud\":%u,\"mode\":%u}",
+                     sw.running, sw.kind, sw.point, sw.total,
+                     (unsigned)sw.baud, sw.mode);
+        }
+
+        /* A completed measurement point, with the interrupt duration
+         * histogram that produced its percentile. Only the populated part of
+         * the histogram goes out. */
+        sweep_row_t row;
+        if (sweep_take_row(&row)) {
+            w_printf(&w,
+                ",\"row\":{\"i\":%u,\"mode\":%u,\"broke\":%u,"
+                "\"target\":%u,\"baud\":%u,\"dev_ppm\":%d,"
+                "\"byte_cyc\":%u,\"irq_cyc\":%u,"
+                "\"isr\":[%u,%u,%u,%u],\"irq_s\":%u,"
+                "\"load_isr\":%u,\"load_total\":%u,\"load_worst\":%u,"
+                "\"ovr\":%u,\"missed\":%u,\"crc\":%u,\"peak\":%u",
+                row.index, row.mode, row.broke,
+                (unsigned)row.target_baud, (unsigned)row.actual_baud,
+                (int)row.deviation_ppm,
+                (unsigned)row.byte_cycles, (unsigned)row.irq_period_cyc,
+                (unsigned)row.isr_min, (unsigned)row.isr_mean,
+                (unsigned)row.isr_max, (unsigned)row.isr_p999,
+                (unsigned)row.irq_per_s,
+                (unsigned)row.load_isr_ppm, (unsigned)row.load_total_ppm,
+                (unsigned)row.worst_load_ppm,
+                (unsigned)row.overruns, (unsigned)row.missed,
+                (unsigned)row.crc_errors, (unsigned)row.ring_peak);
+
+            const uint32_t *h = engine_hist();
+            uint32_t lo = 0, hi = 0;
+            for (uint32_t i = 0; i < ISR_HIST_BINS; i++) {
+                if (h[i]) { if (!hi) { lo = i; } hi = i; }
+            }
+            w_printf(&w, ",\"hist\":{\"lo\":%u,\"scale\":%u,\"d\":[",
+                     (unsigned)lo, (unsigned)ISR_HIST_SCALE);
+            for (uint32_t i = lo; i <= hi; i++) {
+                w_printf(&w, "%s%u", i > lo ? "," : "", (unsigned)h[i]);
+            }
+            w_printf(&w, "]}}");
+        }
+
+        /* One character from the host starts or stops a sweep. Non blocking:
+         * if nothing is waiting we carry straight on. */
+        int cmd = getchar_timeout_us(0);
+        switch (cmd) {
+        case 'U': sweep_request(SWEEP_UART);    break;
+        case 'H': sweep_request(SWEEP_HANDLER); break;
+        case 'B': sweep_request(SWEEP_BOTH);    break;
+        case 'X': sweep_abort();                break;
+        default:  break;
+        }
 
         /* The burst trace only goes out on the packet after a burst finished,
          * so it does not repeat and does not bloat every line. */

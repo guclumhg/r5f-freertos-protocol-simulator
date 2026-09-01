@@ -32,7 +32,9 @@ _Static_assert(TRACE_PERIOD_US == 1041u, "trace period changed unexpectedly");
 
 /* ------------------------------------------------------------------ state */
 
-static uint8_t   s_rx_storage[RING_BYTES];
+/* Aligned to its own size because the DMA receive mode wraps the write
+ * address inside it, and the hardware ring only works on an aligned buffer. */
+static uint8_t   s_rx_storage[RING_BYTES] __attribute__((aligned(RING_BYTES)));
 static uint8_t   s_bridge_storage[RING_BYTES];
 static uint8_t   s_sensor_storage[256];
 
@@ -64,6 +66,10 @@ static volatile uint32_t s_req_cycle;
 static volatile uint32_t s_requests;
 static volatile uint32_t s_responses;
 static volatile uint32_t s_response_failures;
+static volatile uint32_t s_response_bytes;
+/* Where the answer is assembled. The CAN side asked for a sensor reading, so
+ * it gets the 64 bytes of reading - not an acknowledgement. */
+static uint8_t s_response[FRAME_PAYLOAD_BYTES];
 static stat_t            s_resp_latency;
 static uint32_t          s_rng = 0x1234567u;
 
@@ -76,6 +82,16 @@ static volatile uint16_t s_trace_done_len;
 static volatile uint32_t s_trace_seq;
 static volatile bool     s_trace_active;
 static uint32_t          s_tick_count;
+
+/* Interrupt duration histogram, for the sweep's percentile and the
+ * distribution chart. Updated outside the measured window. */
+static uint32_t s_hist[ISR_HIST_BINS];
+
+static volatile bool s_paused;
+
+/* Idle loop counter and its quiet-line reference. */
+static volatile uint32_t s_idle_spins;
+static uint32_t          s_idle_ref_per_ms;
 
 /* --------------------------------------------------------------- lifetime */
 
@@ -96,10 +112,18 @@ void engine_init(void)
     s_tx_from_bridge = false;
     s_req_pending = false;
     s_requests = s_responses = s_response_failures = 0;
+    s_response_bytes = 0;
     s_trace_fill_len = s_trace_done_len = 0;
     s_trace_seq = 0;
     s_trace_active = false;
     s_tick_count = 0;
+    s_idle_spins = 0;
+    s_idle_ref_per_ms = 0;
+}
+
+void engine_idle_tick(void)
+{
+    s_idle_spins++;
 }
 
 /* ------------------------------------------------------- interrupt context
@@ -217,6 +241,66 @@ void PORT_HOT(engine_on_can_slot)(void)
 void PORT_HOT(engine_record_isr)(uint32_t cycles)
 {
     stat_add(&s_isr, cycles);
+
+    uint32_t bin = cycles / ISR_HIST_SCALE;
+    s_hist[bin < ISR_HIST_BINS - 1u ? bin : ISR_HIST_BINS - 1u]++;
+}
+
+void engine_hist_reset(void)
+{
+    memset(s_hist, 0, sizeof(s_hist));
+}
+
+const uint32_t *engine_hist(void)
+{
+    return s_hist;
+}
+
+/* ------------------------------------------------------- sweep plumbing */
+
+void engine_rx_ring_storage(uint8_t **buf, uint32_t *size_pow2)
+{
+    *buf       = s_rx_storage;
+    *size_pow2 = RING_BYTES;
+}
+
+/* The DMA receive mode writes straight into the ring, so all the interrupt
+ * has to do is say how far it got. That is the whole point of the mode: the
+ * per-byte cost disappears rather than being batched. */
+void PORT_HOT(engine_on_rx_block)(uint32_t bytes)
+{
+    uint32_t head  = s_rx_ring.head;
+    uint32_t count = head - s_rx_ring.tail;
+
+    if (count + bytes > s_rx_ring.mask + 1u) {
+        s_rx_ring.overflow += bytes;    /* consumer fell behind */
+    }
+    s_rx_ring.head = head + bytes;
+    if (count + bytes > s_rx_ring.peak) {
+        s_rx_ring.peak = count + bytes;
+    }
+    s_bytes_rx += bytes;
+}
+
+/* Exactly the work the real receive interrupt does, driven by a timer so it
+ * can be pushed past any rate a PL011 can produce. */
+void PORT_HOT(engine_on_synth_tick)(void)
+{
+    static uint8_t synth;
+    rb_push(&s_rx_ring, synth++);
+    s_bytes_rx++;
+}
+
+void engine_pause(void)
+{
+    s_paused = true;
+    port_stop_ticks();
+}
+
+void engine_resume(void)
+{
+    s_paused = false;
+    port_start_ticks();
 }
 
 /* ------------------------------------------------------------------ tasks */
@@ -225,16 +309,34 @@ static void answer_request(void)
 {
     /* Answer from the snapshot of the last good sensor frame. Nothing is
      * dequeued and no ring index moves: the queue is not disturbed. */
-    uint16_t want = frame_crc16(s_verifier.snapshot, FRAME_LEN - 2u);
+    uint16_t want = frame_crc16(s_verifier.snapshot, FRAME_LEN - FRAME_CRC_BYTES);
     uint16_t got  = (uint16_t)s_verifier.snapshot[FRAME_LEN - 2u] |
                     (uint16_t)((uint16_t)s_verifier.snapshot[FRAME_LEN - 1u] << 8);
 
     if (s_verifier.snapshot_seq == 0u || want != got) {
         s_response_failures++;
-    } else {
-        stat_add(&s_resp_latency, port_cycles() - s_req_cycle);
-        s_responses++;
+        s_req_pending = false;
+        return;
     }
+
+    /* Hand over the reading itself: the 64 bytes of payload, checked against
+     * what the frame counter says they should be. An answer that is merely
+     * well formed is not an answer. */
+    const uint8_t *payload = frame_payload(s_verifier.snapshot);
+    const uint8_t  counter = s_verifier.snapshot[2];
+    memcpy(s_response, payload, FRAME_PAYLOAD_BYTES);
+
+    for (uint32_t i = 0; i < FRAME_PAYLOAD_BYTES; i++) {
+        if (s_response[i] != frame_payload_byte(counter, i)) {
+            s_response_failures++;
+            s_req_pending = false;
+            return;
+        }
+    }
+
+    stat_add(&s_resp_latency, port_cycles() - s_req_cycle);
+    s_responses++;
+    s_response_bytes += FRAME_PAYLOAD_BYTES;
     s_req_pending = false;
 }
 
@@ -272,9 +374,20 @@ void engine_sensor_task(void *arg)
         }
         s_frames_built++;
     }
+    /* Calibrate the idle counter before anything starts moving on the line.
+     * Everything else is either blocked or polling at a millisecond, so this
+     * is as close to a quiet machine as the system ever gets. */
+    s_idle_spins = 0;
+    vTaskDelay(pdMS_TO_TICKS(250));
+    s_idle_ref_per_ms = s_idle_spins / 250u;
+
     port_start_ticks();
 
     for (;;) {
+        if (s_paused) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
         /* Keep the small sensor ring topped up. The byte tick drains it at
          * line rate, so this naturally paces itself. During a burst the ring
          * stays full and this task simply has nothing to do - which is the
@@ -325,6 +438,7 @@ void engine_get_stats(engine_stats_t *out)
     out->crc_errors      = s_verifier.crc_errors;
     out->counter_gaps    = s_verifier.counter_gaps;
     out->resyncs         = s_verifier.resyncs;
+    out->payload_errors  = s_verifier.payload_errors;
     out->frames_built    = s_frames_built;
     out->bridge_bursts   = s_verifier.bridge_bursts;
     out->isotp_errors    = s_verifier.isotp_errors;
@@ -337,6 +451,10 @@ void engine_get_stats(engine_stats_t *out)
     out->requests          = s_requests;
     out->responses         = s_responses;
     out->response_failures = s_response_failures;
+    out->response_bytes    = s_response_bytes;
+
+    out->idle_spins      = s_idle_spins;
+    out->idle_ref_per_ms = s_idle_ref_per_ms;
 
     out->trace_seq       = s_trace_seq;
     out->trace_len       = s_trace_done_len;

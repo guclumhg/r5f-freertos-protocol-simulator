@@ -48,11 +48,28 @@
 #define FRAME_SYNC1   0x5Au
 #define FRAME_LEN     SENSOR_FRAME_BYTES        /* 69 */
 
-/* CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, no reflection, no final xor. */
+/* CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, no reflection, no final xor.
+ * Table driven; frame_rx_init builds the table if nobody has yet. */
+void     frame_crc_init(void);
 uint16_t frame_crc16(const uint8_t *data, uint32_t len);
 
 /* Builds one complete 69 byte frame. */
 void frame_build_sensor(uint8_t *out, uint8_t counter);
+
+/* The 64 bytes of meaning inside a frame - what the sensor actually said, and
+ * what the CAN side asks for when it wants a reading. Everything else on the
+ * wire is transport. */
+static inline const uint8_t *frame_payload(const uint8_t *frame)
+{
+    return frame + FRAME_HEADER_BYTES + FRAME_COUNTER_BYTES;
+}
+
+/* What byte i of the payload should be for a given frame counter. The sender
+ * and the checker both go through here so they cannot disagree. */
+static inline uint8_t frame_payload_byte(uint8_t counter, uint32_t i)
+{
+    return (uint8_t)((counter + i) & 0x7Fu);
+}
 
 /* The byte the bridge should be sending at this position of a burst. Used by
  * both the generator and the checker, so they cannot drift apart. */
@@ -71,6 +88,10 @@ typedef struct {
     uint32_t crc_errors;
     uint32_t counter_gaps;
     uint32_t resyncs;
+    /* The checksum says the frame arrived intact. This says the 64 bytes
+     * inside it are the 64 bytes the sensor put there - the difference
+     * between having buffered the data and having read it. */
+    uint32_t payload_errors;
     bool     have_last;
     uint8_t  last_counter;
 

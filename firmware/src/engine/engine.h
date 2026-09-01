@@ -61,6 +61,7 @@ typedef struct {
     uint32_t crc_errors;
     uint32_t counter_gaps;
     uint32_t resyncs;
+    uint32_t payload_errors;
     uint32_t frames_built;
 
     /* bridge stream, carried unframed and checked by its counting pattern */
@@ -78,7 +79,16 @@ typedef struct {
     uint32_t requests;
     uint32_t responses;
     uint32_t response_failures;
+    uint32_t response_bytes;     /* payload bytes actually handed to the CAN
+                                  * side, 64 per answered request */
     stat_t   response_latency;   /* cycles from request to answer */
+
+    /* True CPU load, measured by how much idle time disappeared rather than
+     * by timing the handler. Catches exception entry and exit, bus
+     * contention, and everything else the cycle counter cannot see from
+     * inside the handler. */
+    uint32_t idle_spins;        /* cumulative idle loop count */
+    uint32_t idle_ref_per_ms;   /* the same count per ms with the line quiet */
 
     /* burst trace: bridge ring occupancy, one sample every 12 byte ticks */
     uint16_t trace[BURST_TRACE_SAMPLES];
@@ -88,6 +98,25 @@ typedef struct {
 } engine_stats_t;
 
 void engine_init(void);
+
+/* Called from the FreeRTOS idle hook. Must stay trivial. */
+void engine_idle_tick(void);
+
+/* ------------------------------------------------------- sweep support --
+ * A histogram of interrupt durations, so the sweep can report a 99.9th
+ * percentile and the dashboard can draw the distribution. The spread matters
+ * as much as the mean: this core fetches through a flash cache, and the cache
+ * is what puts the tail where it is.
+ * ---------------------------------------------------------------------- */
+#define ISR_HIST_BINS   256u
+#define ISR_HIST_SCALE  2u          /* cycles per bin */
+
+void engine_hist_reset(void);
+const uint32_t *engine_hist(void);  /* ISR_HIST_BINS entries, last is overflow */
+
+/* Stops the sensor and CAN sides so the sweep owns the line. */
+void engine_pause(void);
+void engine_resume(void);
 
 /* The two FreeRTOS tasks. Priorities are set in main.c. */
 void engine_protocol_task(void *arg);
