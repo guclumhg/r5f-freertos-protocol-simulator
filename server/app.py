@@ -198,16 +198,23 @@ def serial_reader(explicit: str | None, log_path: str | None) -> None:
 
 def replay_reader(path: str) -> None:
     """Replay a captured log at its original rate, looping forever."""
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        samples = []
-        for line in fh:
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    samples.append(json.loads(line))
-                except ValueError:
-                    pass
+    samples = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("{"):
+                    try:
+                        samples.append(json.loads(line))
+                    except ValueError:
+                        pass
+    except OSError as exc:
+        HUB.source = f"replay failed: {exc}"
+        print(f"[replay] {exc}", flush=True)
+        return
+
     if not samples:
+        HUB.source = f"replay failed: no usable samples in {path}"
         print(f"[replay] {path} has no usable samples", flush=True)
         return
 
@@ -414,6 +421,9 @@ def main() -> None:
     if args.demo:
         target = demo_reader, ()
     elif args.replay:
+        # Fail here rather than in a daemon thread whose death nobody notices.
+        if not os.path.isfile(args.replay):
+            sys.exit(f"no such replay file: {args.replay}")
         target = replay_reader, (args.replay,)
     else:
         target = serial_reader, (args.serial, args.log)
