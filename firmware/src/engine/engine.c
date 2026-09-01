@@ -83,7 +83,7 @@ void engine_init(void)
  * interrupt can never be delayed by the kernel.
  */
 
-void engine_on_rx_byte(uint8_t b, uint32_t dr_flags)
+void PORT_HOT(engine_on_rx_byte)(uint8_t b, uint32_t dr_flags)
 {
     if (dr_flags & DR_OVERRUN_BIT) {
         s_uart_overrun++;
@@ -92,7 +92,7 @@ void engine_on_rx_byte(uint8_t b, uint32_t dr_flags)
     s_bytes_rx++;
 }
 
-void engine_on_byte_tick(void)
+void PORT_HOT(engine_on_byte_tick)(void)
 {
     uint8_t b;
 
@@ -133,7 +133,7 @@ void engine_on_byte_tick(void)
     }
 }
 
-void engine_on_can_slot(void)
+void PORT_HOT(engine_on_can_slot)(void)
 {
     /* Filled in with the ISO-TP burst generator in the next step. */
 }
@@ -142,7 +142,7 @@ void engine_on_can_slot(void)
  * already taken its closing timestamp. The statistics update itself is
  * therefore outside the reported window; the GPIO probe covers the whole
  * interrupt including this call, so the two can be compared on a scope. */
-void engine_record_isr(uint32_t cycles)
+void PORT_HOT(engine_record_isr)(uint32_t cycles)
 {
     stat_add(&s_isr, cycles);
 }

@@ -19,8 +19,8 @@
 
 /* RP2350 boots at 150 MHz. Asserted at runtime in port_init(); both periodic
  * timers below are exact integer cycle counts only because of this value. */
-#define SYS_CLK_HZ              150000000u
-#define CYCLES_PER_US           (SYS_CLK_HZ / 1000000u)     /* 150 */
+#define R5F_SYS_CLK_HZ          150000000u
+#define CYCLES_PER_US           (R5F_SYS_CLK_HZ / 1000000u)     /* 150 */
 
 /* --------------------------------------------------------------- the wire */
 
@@ -89,9 +89,9 @@
 _Static_assert(BIT_TIME_NS * 10u == BYTE_TIME_NS,
                "8N1 is 10 bit times per byte");
 _Static_assert(BYTE_TIME_NS * CYCLES_PER_US / 1000u == BYTE_TIME_CYCLES,
-               "byte tick is not a whole number of cycles at SYS_CLK_HZ");
+               "byte tick is not a whole number of cycles at R5F_SYS_CLK_HZ");
 _Static_assert(CAN_SLOT_NS * CYCLES_PER_US / 1000u == CAN_SLOT_CYCLES,
-               "CAN slot is not a whole number of cycles at SYS_CLK_HZ");
+               "CAN slot is not a whole number of cycles at R5F_SYS_CLK_HZ");
 _Static_assert(BYTE_TIME_CYCLES < 65536u && CAN_SLOT_CYCLES < 65536u,
                "both periods must fit a 16-bit PWM wrap");
 _Static_assert(SENSOR_BYTES_PER_SEC == UART_BAUD / 10u,

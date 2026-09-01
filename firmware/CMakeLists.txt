@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
-add_executable(r5f_sim
+set(R5F_SOURCES
     src/main.c
     src/telemetry.c
     src/engine/engine.c
@@ -20,6 +20,8 @@ add_executable(r5f_sim
     src/engine/ringbuf.c
     src/port/port_rp2350.c
 )
+
+add_executable(r5f_sim ${R5F_SOURCES})
 
 target_include_directories(r5f_sim PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src
@@ -37,7 +39,10 @@ target_link_libraries(r5f_sim PRIVATE
     FreeRTOS-Kernel-Heap4
 )
 
-target_compile_options(r5f_sim PRIVATE -Wall -Wextra -Werror)
+# Strict, but only on our own code. The SDK and the FreeRTOS kernel are
+# compiled into this same target and are not ours to keep warning-free.
+set_source_files_properties(${R5F_SOURCES} PROPERTIES
+    COMPILE_OPTIONS "-Wall;-Wextra;-Werror")
 
 # UART0 is the device under test. Console output must never touch it.
 pico_enable_stdio_uart(r5f_sim 0)

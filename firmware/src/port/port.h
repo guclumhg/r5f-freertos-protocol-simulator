@@ -72,6 +72,24 @@ uint32_t port_actual_baud(void);
 uint32_t port_irq_save(void);
 void     port_irq_restore(uint32_t state);
 
+/* Marks a function as belonging on the hot path, so it is placed in fast
+ * memory rather than in execute-in-place flash.
+ *
+ * On RP2350 this puts it in SRAM, using the same .time_critical section the
+ * SDK's own __not_in_flash_func macro uses - spelled out here rather than
+ * included, so engine code stays free of SDK headers. On the target the
+ * equivalent annotation places the function in the R5F's tightly coupled
+ * memory, which is where the specification says the bridge will run. On a
+ * host build it does nothing.
+ *
+ * This is not a micro-optimisation. Without it the interrupt occasionally
+ * pays a flash cache miss, and the worst case is what this project reports. */
+#if defined(PICO_RP2350) || defined(PICO_RP2040)
+#  define PORT_HOT(fn) __attribute__((section(".time_critical." #fn))) fn
+#else
+#  define PORT_HOT(fn) fn
+#endif
+
 /* ------------------------------------------------------------------------
  * Callbacks the engine implements and the port calls from interrupt context.
  * None of these may call a FreeRTOS API: they run above the kernel's syscall

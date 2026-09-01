@@ -60,7 +60,20 @@
 
 #define configUSE_CO_ROUTINES                   0
 #define configMAX_CO_ROUTINE_PRIORITIES         1
-#define configUSE_TIMERS                        0
+
+/* The RP2350 port needs the timer service task: configSUPPORT_PICO_SYNC_INTEROP
+ * hands a blocked task back to the scheduler through xEventGroupSetBitsFromISR,
+ * which only exists when timers and pended function calls are compiled in.
+ *
+ * FreeRTOS normally recommends running this service task at the top priority.
+ * It is deliberately placed below the sensor task here instead, so that it can
+ * never preempt the protocol task. Nothing on the measured path depends on it -
+ * its only user in this system is the USB mutex the telemetry task takes, and
+ * telemetry runs below it, so there is no inversion. */
+#define configUSE_TIMERS                        1
+#define configTIMER_TASK_PRIORITY               2
+#define configTIMER_QUEUE_LENGTH                8
+#define configTIMER_TASK_STACK_DEPTH            512
 
 #ifndef __ASSEMBLER__
 /* Free-running 1 us counter, implemented in port_rp2350.c over the RP2350
@@ -103,5 +116,6 @@ unsigned long r5f_runtime_counter(void);
 #define INCLUDE_uxTaskGetStackHighWaterMark     1
 #define INCLUDE_xTaskGetIdleTaskHandle          1
 #define INCLUDE_eTaskGetState                   1
+#define INCLUDE_xTimerPendFunctionCall          1
 
 #endif /* FREERTOS_CONFIG_H */

@@ -34,6 +34,12 @@
 
 #include "config.h"
 
+/* config.h carries its own clock constant because it has to stay free of any
+ * SDK dependency. The SDK states the same number independently, so check the
+ * two against each other here rather than trusting either alone. */
+_Static_assert(R5F_SYS_CLK_HZ == SYS_CLK_HZ,
+               "config.h disagrees with the SDK about the RP2350 system clock");
+
 /* ------------------------------------------------------- DWT cycle counter
  *
  * Addressed directly rather than through CMSIS so this file has no dependency
