@@ -152,7 +152,24 @@ void PORT_HOT(engine_on_byte_tick)(void)
      * run cut in half could not either - so once one of them has the line, it
      * keeps it until it is finished. */
     if (s_tx_remaining == 0u) {
-        s_tx_from_bridge = !rb_empty(&s_bridge_ring);
+        /* Starting and continuing are different questions, and answering
+         * them the same way splits bursts at one end or the other.
+         *
+         * To START, one whole CAN frame has to be waiting. At the very
+         * beginning of a burst the ring holds only what the first consecutive
+         * frame delivered; taking the line for one or two bytes drains them
+         * faster than the next frame arrives, the ring empties, the sensor
+         * begins a 69 byte frame, and the burst has been cut in half at the
+         * head. Eight bytes take 694 us to send and five more frames land in
+         * that time, so from there it stays ahead.
+         *
+         * To CONTINUE, empty is the only reason to stop. Applying the
+         * eight byte rule here instead would strand the last few bytes of
+         * every burst and cut it in half at the tail - which is exactly what
+         * happened when both used the same test. */
+        s_tx_from_bridge = s_tx_from_bridge
+            ? !rb_empty(&s_bridge_ring)
+            : rb_count(&s_bridge_ring) >= CAN_FRAME_PAYLOAD;
     }
 
     if (s_tx_from_bridge) {
@@ -304,6 +321,36 @@ void engine_pause(void)
 {
     s_paused = true;
     port_stop_ticks();
+}
+
+bool engine_between_bursts(void)
+{
+    return !s_tp.active &&
+           s_verifier.bridge_bytes == 0u &&
+           rb_empty(&s_bridge_ring);
+}
+
+void engine_reset_counters(void)
+{
+    uint32_t st = port_irq_save();
+
+    frame_rx_init(&s_verifier);
+    stat_reset(&s_isr);
+    stat_reset(&s_resp_latency);
+    engine_hist_reset();
+
+    s_bytes_rx = s_bytes_tx_sensor = s_bytes_tx_bridge = 0;
+    s_idle_ticks = s_tx_stalls = s_uart_overrun = s_frames_built = 0;
+    s_requests = s_responses = s_response_failures = s_response_bytes = 0;
+
+    s_rx_ring.overflow     = 0;
+    s_rx_ring.peak         = 0;
+    s_bridge_ring.overflow = 0;
+    s_bridge_ring.peak     = 0;
+
+    s_tp.bursts = s_tp.frames = s_tp.data_bytes = 0;
+
+    port_irq_restore(st);
 }
 
 void engine_resume(void)

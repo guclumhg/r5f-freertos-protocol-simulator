@@ -79,13 +79,19 @@ kaybı, ki o çoktan diğer sayaçlara yansırdı.
 
 | Nicelik | Ölçülen | Hesap |
 |---|---|---|
-| UART RX kesmesi, en iyi | 37 çevrim / 0,247 µs | — |
-| UART RX kesmesi, tipik | 37 çevrim / 0,247 µs | — |
-| **UART RX kesmesi, en kötü** | **38 çevrim / 0,253 µs** | — |
+| UART RX kesmesi, en iyi | 46 çevrim / 0,307 µs | — |
+| UART RX kesmesi, tipik | 46 çevrim / 0,307 µs | — |
+| **UART RX kesmesi, en kötü** | **47 çevrim / 0,313 µs** | — |
 | Seğirme (en kötü − en iyi) | **1 çevrim** | — |
 | Bayt bütçesi | 13.020 çevrim / 86,8 µs | 86,8 µs |
-| **En kötü durumda marj** | **%99,71** | — |
-| Pay | **343 kat** | — |
+| **En kötü durumda marj** | **%99,64** | — |
+| Pay | **277 kat** | — |
+
+Kesme, baud taraması eklenmeden önce 37 çevrimdi. Farkı yaratan iki şey
+sıcak yolda duruyor: alma modunu seçen dal (bayt başına mı, FIFO'yu boşalt mı)
+ve kesmenin kendi bütçesini sayması. İkisi de taramanın çalışabilmesi için
+gerekli — bütçe olmadan kart, ölçmeye çalıştığı noktada kilitleniyor. Dokuz
+çevrim, 13.020'lik bir bütçede %0,07.
 
 ### Hat
 
@@ -95,7 +101,7 @@ kaybı, ki o çoktan diğer sayaçlara yansırdı.
 | Hatta geçen bayt | 11.521 B/s | 11.520 B/s |
 | — sensör payı | 10.497 B/s | 10.496 B/s |
 | — köprü payı | 1.024 B/s | 1.024 B/s |
-| **Sensör çerçevesi, CAN yükü altında** | **152,56 Hz** | **152,12 Hz** |
+| **Sensör çerçevesi, CAN yükü altında** | **152,53 Hz** | **152,12 Hz** |
 
 11.521 ile 11.520 arasındaki fark uydurma değil: baud bölücüsü 115.200 yerine
 115.207 üretiyor, yani hat nominalden 61 ppm hızlı. Ölçüm bunu görüyor.
@@ -109,10 +115,10 @@ köprüye öncelik veriyor, bedeli sensör ödüyor — saniyede
 
 | Nicelik | Ölçülen | Hesap |
 |---|---|---|
-| Patlama | 58 | 58 (saniyede bir) |
-| CAN çerçevesi | 8.526 | 8.526 = 58 × 147 |
-| Köprü yükü | 59.392 B | 59.392 B = 58 × 1024 |
-| Karşı tarafta birleştirilen patlama | **58** | 58 (hepsi) |
+| Patlama | 68 | 68 (saniyede bir) |
+| CAN çerçevesi | 9.996 | 9.996 = 68 × 147 |
+| Köprü yükü | 69.632 B | 69.632 B = 68 × 1024 |
+| Karşı tarafta birleştirilen patlama | **68** | 68 (hepsi) |
 | **Birleştirme hatası** | **0** | 0 |
 
 Üçü de **tam** tutuyor, yuvarlama yok. 147 çerçevenin dağılımı:
@@ -147,6 +153,7 @@ birikiyor, görev hepsini alıp gidiyor.
 | | Ölçülen | Hesap |
 |---|---|---|
 | Sensör CRC hatası | 0 | 0 |
+| **Yük içeriği hatası** | **0** | 0 |
 | Sensör çerçeve sayacı boşluğu | 0 | 0 |
 | Yeniden senkron | 0 | 0 |
 | Köprü birimi CRC hatası | 0 | 0 |
@@ -190,6 +197,26 @@ yükü ayrıca hesaplanabilir: 11.521 kesme/s × 38 çevrim = 437.798 çevrim/s,
 yani 150 MHz'in **%0,29**'u.
 
 ---
+
+## Hakem: başlamak ile devam etmek ayrı sorular
+
+Baud taraması çalışırken ortaya çıkan gerçek bir hata. Hakem hattı köprüye
+devrederken ve köprüde tutarken aynı testi kullanıyordu, ve bu patlamayı bir
+ucundan ya da öbüründen kesiyordu:
+
+- **Bir bayt varsa devral** dersen: patlamanın en başında halkada sadece ilk
+  ardışık çerçevenin getirdiği 8 bayt var. Onları göndermek, bir sonraki
+  çerçevenin gelmesinden hızlı; halka boşalıyor, sensör 69 baytlık bir
+  çerçeveye başlıyor, **patlama baştan ikiye bölünüyor**.
+- **Sekiz bayt varsa devral, altına düşünce bırak** dersen: bu sefer
+  patlamanın son birkaç baytı öksüz kalıyor, **sondan bölünüyor**. Ölçüldü:
+  90 patlamada 178 hata.
+
+Doğrusu ikisini ayırmak: **başlamak için bir tam CAN çerçevesi (8 bayt),
+devam etmek için tek koşul halkanın boşalması.** Sekiz bayt 694 µs sürüyor ve
+o sürede beş çerçeve daha geliyor, yani başladıktan sonra önde kalıyor.
+
+Ölçüldü: 99 patlama, 99'u da karşı tarafta birleştirildi, **sıfır hata**.
 
 ## İki bulgu
 

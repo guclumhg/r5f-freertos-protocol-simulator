@@ -411,6 +411,18 @@ void sweep_task(void *arg)
         port_set_rx_mode(RX_MODE_PER_BYTE);
         engine_resume();
 
+        /* Zero the counters once the stream is back AND a burst is not in
+         * flight. The sweep ran other baud rates with no valid frames on
+         * them, so its wreckage is in the error counts - but clearing them at
+         * an arbitrary moment cuts a CAN burst in half, and the receiver
+         * correctly reports the half it never saw as a reassembly failure.
+         * The live page would then open on faults that never happened. */
+        vTaskDelay(pdMS_TO_TICKS(400));
+        for (uint32_t i = 0; i < 200u && !engine_between_bursts(); i++) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        engine_reset_counters();
+
         s_status.running = 0;
         s_request = SWEEP_NONE;
     }

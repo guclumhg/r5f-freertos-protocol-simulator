@@ -26,19 +26,19 @@ construction and its rate is a consequence rather than a setting:
 
 | | measured | predicted |
 |---|---|---|
-| UART RX interrupt, typical | **37 cycles / 0.247 µs** | — |
-| UART RX interrupt, worst case | **38 cycles / 0.253 µs** | — |
+| UART RX interrupt, typical | **46 cycles / 0.307 µs** | — |
+| UART RX interrupt, worst case | **47 cycles / 0.313 µs** | — |
 | jitter (worst − best) | **1 cycle** | — |
 | byte deadline | 13 020 cycles / 86.8 µs | 86.8 µs |
-| **worst-case margin** | **99.71 %** (343× headroom) | — |
+| **worst-case margin** | **99.64 %** (277× headroom) | — |
 | line throughput | 11 521 B/s | 11 520 B/s |
-| sensor frame rate, under CAN load | **152.56 Hz** | **152.12 Hz** |
+| sensor frame rate, under CAN load | **152.53 Hz** | **152.12 Hz** |
 | CAN frames per burst | 147 | 147 |
 | bridge payload per burst | 1 024 B | 1 024 B |
-| bursts reassembled at the far end | 58 of 58, 0 failures | all |
+| bursts reassembled at the far end | 68 of 68, 0 failures | all |
 | **peak bridge backlog** | **796 / 831 / 866 B** (min/mean/max) | **796–864 B** |
 | remaining ring margin | 4.7× | ~5× |
-| CRC errors, counter gaps, overruns, overflows, stalls | **0** | 0 |
+| CRC errors, counter gaps, payload errors, overruns, overflows, stalls | **0** | 0 |
 
 ## The two things measurement found that arithmetic did not
 

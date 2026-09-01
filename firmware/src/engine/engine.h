@@ -118,6 +118,17 @@ const uint32_t *engine_hist(void);  /* ISR_HIST_BINS entries, last is overflow *
 void engine_pause(void);
 void engine_resume(void);
 
+/* Clears every cumulative counter. Called when a sweep hands the line back:
+ * the sweep ran different baud rates with no valid frames on them, so its
+ * wreckage is in the error counts, and carrying it into the live measurement
+ * would show a million faults that never happened there. */
+void engine_reset_counters(void);
+
+/* True when no CAN burst is in flight and the receiver is not part way
+ * through one. Clearing the counters anywhere else cuts a burst in half and
+ * the receiver reports the half it did not see as a reassembly failure. */
+bool engine_between_bursts(void);
+
 /* Forget where the frame counter was. Each sweep point restarts the transmit
  * buffer from its beginning, so the first frame of a point follows the last
  * frame of the previous one by an arbitrary jump. That is a discontinuity in
